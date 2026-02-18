@@ -215,4 +215,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-.DS_Storedata/raw/*.csv
+# macOS
+.DS_Store
+
+# Ignore CSV files
+data/**/**/*.csv
+outputs/**/**/*.csv
