@@ -9,7 +9,7 @@ import logging
 import pandas as pd
 import numpy as np
 
-from config import TARGET_METRO, CENSUS_TABLES
+from config import TARGET_METRO
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +76,16 @@ def process_crime(crime_df: pd.DataFrame, census_df: pd.DataFrame = None) -> pd.
     """
     Aggregate SAPD CFS incidents to ZIP level, normalized per 1,000 residents.
 
-    Pass census_df (output of process_census) so population data is available
-    for proper normalization. Without it, raw counts are used and the
-    max_crime_per_1k threshold in config.py becomes meaningless.
+    Key design decision: filter by Problem type (criminal incidents only),
+    NOT by Priority. Priority 1/2 includes medical emergencies, welfare checks,
+    noise complaints — that's activity intensity, not crime severity.
+    The VIOLENT_CRIME_PROBLEMS allowlist in config.py controls what counts.
 
-    SA Open Data CFS schema (verified Feb 2026): ZIP column = 'Postal_Code'
+    Pass census_df (output of process_census) for population normalization.
+    Without it, raw counts are used and crime scoring is meaningless.
     """
+    from config import VIOLENT_CRIME_PROBLEMS
+
     df = crime_df.copy()
 
     zip_col = next(
@@ -96,17 +100,29 @@ def process_crime(crime_df: pd.DataFrame, census_df: pd.DataFrame = None) -> pd.
 
     df["zip"] = df[zip_col].astype(str).str.strip().str.zfill(5)
 
-    # Filter to Priority 1 & 2 (immediate/urgent) — closest proxy to serious incidents
-    if "Priority" in df.columns:
-        df = df[df["Priority"].isin(["1", "2", 1, 2])]
-        logger.info(f"Filtered to Priority 1 & 2 calls: {len(df):,} incidents")
+    # Filter by Problem allowlist — criminal incidents only, no noise/medical/welfare
+    if "Problem" in df.columns:
+        before = len(df)
+        df["_problem_upper"] = df["Problem"].astype(str).str.upper().str.strip()
+        df = df[df["_problem_upper"].isin({p.upper() for p in VIOLENT_CRIME_PROBLEMS})]
+        df = df.drop(columns=["_problem_upper"])
+        logger.info(
+            f"Crime Problem filter: {before:,} total CFS -> {len(df):,} criminal incidents "
+            f"({len(df) / before * 100:.1f}% of all calls)"
+        )
+    else:
+        logger.warning(
+            "No 'Problem' column found — cannot filter by incident type. "
+            "All calls counted. Inspect columns: crime_df.columns"
+        )
 
-    # Exclude JBSA ZIPs — not valid house-hack targets
+    # Exclude JBSA ZIPs — not valid house-hack targets, distorts base population
     military_zips = {"78234", "78235", "78236", "78243"}
     df = df[~df["zip"].isin(military_zips)]
 
     crime_counts = df.groupby("zip").size().reset_index(name="crime_incidents")
 
+    # Normalize by population — required for cross-ZIP comparisons to mean anything
     if census_df is not None and "population" in census_df.columns:
         pop = census_df[["zip", "population"]].copy()
         pop["population"] = pd.to_numeric(pop["population"], errors="coerce")
@@ -119,14 +135,14 @@ def process_crime(crime_df: pd.DataFrame, census_df: pd.DataFrame = None) -> pd.
     else:
         logger.warning(
             "No population data — using raw crime counts. "
-            "Pass census_df to process_crime() to enable proper per-1k normalization."
+            "Pass census_df to process_crime() for proper normalization."
         )
         crime_counts["crime_per_1k"] = crime_counts["crime_incidents"]
 
     result = crime_counts[["zip", "crime_per_1k"]].dropna()
     logger.info(
         f"Crime: {len(result)} ZIPs | "
-        f"range: {result['crime_per_1k'].min():.1f} – {result['crime_per_1k'].max():.1f} per 1k"
+        f"range: {result['crime_per_1k'].min():.1f} - {result['crime_per_1k'].max():.1f} per 1k"
     )
     return result
 
@@ -142,8 +158,8 @@ def merge_datasets(
 ) -> pd.DataFrame:
     """
     Inner-join all processed DataFrames on ZIP.
-    ZIPs missing from ANY source are dropped — explicit, not silent.
-    Population is dropped after merge (used for crime normalization only).
+    ZIPs missing from ANY source are dropped — logged explicitly.
+    Population is dropped after merge (used only for crime normalization).
     """
     datasets = {
         "ZHVI":    zhvi,
@@ -157,12 +173,11 @@ def merge_datasets(
     for name, df in list(datasets.items())[1:]:
         before = len(base)
         base = base.merge(df, on="zip", how="inner")
-        after = len(base)
-        dropped = before - after
+        dropped = before - len(base)
         if dropped > 0:
             logger.warning(f"{name} merge dropped {dropped} ZIPs (no matching data)")
 
-    # Drop population from final dataset — it was only needed for crime normalization
+    # Drop population — only needed upstream for crime rate normalization
     if "population" in base.columns:
         base = base.drop(columns=["population"])
 

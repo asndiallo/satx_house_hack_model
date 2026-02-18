@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from utils import setup_logging, save_csv, load_zip_centroids
 from data_loader import load_zhvi, load_zori, load_census_acs, load_crime_data
 from preprocess import process_zhvi, process_zori, process_census, process_crime, merge_datasets
-from feature_engineering import compute_rent_to_price, apply_hard_filters, normalize_features
+from feature_engineering import compute_rent_to_price, apply_hard_filters, apply_log_crime_transform, normalize_features
 from commute import add_drive_time_google, add_straight_line_distance
 from scoring import compute_final_score, generate_summary_table
 from config import DATA_PROC, DATA_FINAL, OUTPUTS, THRESHOLDS
@@ -62,12 +62,19 @@ def check_hard_filters(df: pd.DataFrame) -> None:
     print(f"  {'-'*55}")
 
     checks = [
-        ("rent_to_price >= min",   "rent_to_price",    ">=", THRESHOLDS["min_rent_to_price"]),
-        ("median_home_value <= max","median_home_value","<=", THRESHOLDS["max_home_value"]),
-        ("owner_occ_pct >= min",   "owner_occ_pct",    ">=", THRESHOLDS["min_owner_occ_pct"]),
-        ("owner_occ_pct <= max",   "owner_occ_pct",    "<=", THRESHOLDS["max_owner_occ_pct"]),
-        ("crime_per_1k <= max",    "crime_per_1k",     "<=", THRESHOLDS["max_crime_per_1k"]),
+        ("rent_to_price >= min",    "rent_to_price",    ">=", THRESHOLDS["min_rent_to_price"]),
+        ("median_home_value <= max", "median_home_value","<=", THRESHOLDS["max_home_value"]),
+        ("owner_occ_pct >= min",    "owner_occ_pct",    ">=", THRESHOLDS["min_owner_occ_pct"]),
+        ("owner_occ_pct <= max",    "owner_occ_pct",    "<=", THRESHOLDS["max_owner_occ_pct"]),
+        # Crime uses percentile filter — no hard threshold here
     ]
+    # Show crime distribution separately
+    if "crime_per_1k" in df.columns:
+        crime = pd.to_numeric(df["crime_per_1k"], errors="coerce")
+        from config import CRIME_PERCENTILE_CUTOFF
+        pct_threshold = crime.quantile(CRIME_PERCENTILE_CUTOFF)
+        above = (crime > pct_threshold).sum()
+        print(f"  {'crime_per_1k (percentile)':<30} {above:>8}  (>{pct_threshold:.1f} = top {1-CRIME_PERCENTILE_CUTOFF:.0%})")
 
     surviving = pd.Series([True] * len(df), index=df.index)
     for label, col, op, threshold in checks:
@@ -194,6 +201,7 @@ def run_pipeline(use_google_maps: bool = True, top_n: int = 15, diagnose_mode: b
         check_hard_filters(features)
 
     features = apply_hard_filters(features)
+    features = apply_log_crime_transform(features)
 
     if features.empty:
         logger.error(
