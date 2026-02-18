@@ -1,8 +1,12 @@
 """
 config.py
 ---------
-Single source of truth for all model parameters.
+Single source of truth for ALL model parameters.
 Change weights, thresholds, and paths HERE only — never hardcode elsewhere.
+
+This model is tuned for Path B: military house hack, 3-year hold, BAMC duty station.
+Path B logic: screen out unacceptable risk first, then optimize within safe candidates.
+Some things are NOT tradeable — those are filters, not weights.
 """
 
 from pathlib import Path
@@ -23,47 +27,64 @@ DUTY_STATION = {
 }
 
 # ── Geographic Scope ──────────────────────────────────────────────────────────
-TARGET_STATE_FIPS = "48"        # Texas
+TARGET_STATE_FIPS = "48"
 TARGET_METRO      = "San Antonio"
-MAX_COMMUTE_MILES = 25          # straight-line cutoff before scoring
-MAX_COMMUTE_MINS  = 35          # drive-time cutoff (Google Maps)
+MAX_COMMUTE_MILES = 25
+MAX_COMMUTE_MINS  = 35
 
 # ── Scoring Weights (must sum to 1.0) ─────────────────────────────────────────
-# Challenge these before going live — they encode YOUR priorities.
-# Run: python sensitivity.py to see how rankings shift when weights change.
+# These encode your priorities AS A MILITARY HOUSE HACKER, not a pure investor.
+# Key shifts vs Path A investor logic:
+#   - Crime weight increased (you live there — it is not negotiable)
+#   - Yield weight decreased (viability matters more than maximization)
+#   - Stability added (3-year hold = price volatility is real risk)
+#   - Commute reduced slightly (still important, but safety/stability outrank it)
+#
+# Run: python sensitivity.py to verify rankings hold across weight perturbations.
 WEIGHTS = {
-    "rent_to_price":   0.35,
-    "crime":           0.25,
-    "owner_occupancy": 0.20,
-    "commute":         0.20,
+    "rent_to_price":   0.25,   # viability, not maximization
+    "crime":           0.30,   # non-negotiable — you live there
+    "owner_occupancy": 0.20,   # neighborhood stability proxy
+    "commute":         0.15,   # important but not override-level
+    "stability":       0.10,   # 3-year price stability (ZHVI CoV)
 }
 assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 
-# ── Hard Filters (absolute disqualifiers) ────────────────────────────────────
-# These remove ZIPs before scoring. Crime is handled separately via percentile.
+# ── Hard Filters (non-negotiable disqualifiers) ───────────────────────────────
+# Anything here is a SCREEN, not a scored dimension.
+# Path B principle: if you won't compromise on it, make it a filter.
 THRESHOLDS = {
-    # SA is a C+/B- yield market. Observed range: 0.04-0.09.
-    "min_rent_to_price":  0.055,
+    # Derived from SA cashflow math (not arbitrary):
+    # VA loan 0% down, 6.5% rate, $250k home ~ $1,580/month PITI
+    # Need ~$1,800/month rent to cover PITI + 5% vacancy + 8% maintenance reserve
+    # $1,800 * 12 / $250,000 = 0.0864 — setting 0.072 as minimum viable floor
+    "min_rent_to_price":  0.072,
 
-    # Adjust to your VA loan limit / purchase budget ceiling.
-    "max_home_value":     500_000,
+    # SA 2026 conforming VA loan limit — adjust if your COE differs
+    "max_home_value":     450_000,
 
-    # Balanced range: too low = transient/unstable, too high = low rental demand
-    "min_owner_occ_pct":  0.40,
-    "max_owner_occ_pct":  0.85,
+    # Tightened from 0.40: below 50% = neighborhood is primarily transient renters
+    # That's not who you want living next to you or renting from you
+    "min_owner_occ_pct":  0.50,
+
+    # Above 80% = low rental demand; finding tenants will be hard
+    "max_owner_occ_pct":  0.80,
+
+    # Tenant base quality screen — low income correlates with:
+    # higher delinquency risk, slower resale, weaker neighborhood trajectory
+    # $45k = roughly E-5/E-6 BAH + base pay range in SA — your target tenant
+    "min_median_income":  45_000,
 }
 
 # ── Crime Filtering ───────────────────────────────────────────────────────────
-# Percentile-based cutoff: keeps bottom N% of ZIPs by crime rate.
-# More robust than a hard threshold because it's immune to CFS data distortion.
-# 0.60 = keep the 60% least-criminal ZIPs in your scoring pool.
-CRIME_PERCENTILE_CUTOFF = 0.60
+# Path B: crime is a hard screen, not a soft negotiable.
+# 0.50 = keep only the safer half of your ZIP pool.
+# You live in this property. This is not tradeable against yield.
+CRIME_PERCENTILE_CUTOFF = 0.50
 
-# Allowlist of SA CFS Problem values that map to actual criminal incidents.
-# Filters out: medical emergencies, welfare checks, noise complaints, traffic.
-# If crime_per_1k still looks distorted, inspect with:
-#   crime_raw["Problem"].value_counts().head(30)
-# Then add or remove values here.
+# Allowlist of SA CFS Problem types that represent actual criminal incidents.
+# Excludes medical emergencies, welfare checks, noise, traffic — activity, not crime.
+# To inspect actual values in your data: crime_raw["Problem"].value_counts().head(40)
 VIOLENT_CRIME_PROBLEMS = {
     "ASSAULT",
     "ASSAULT - FAMILY VIOLENCE",
@@ -90,17 +111,32 @@ VIOLENT_CRIME_PROBLEMS = {
     "NARCOTICS - SELL/DELIVER",
 }
 
+# ── Yield Cap ─────────────────────────────────────────────────────────────────
+# Path B treats abnormal yield as a warning sign, not a bonus.
+# In SA, gross yield > 12% almost always means:
+#   - Distressed area, deferred maintenance, or data quality issue
+#   - NOT a hidden gem
+# Cap rent_to_price at this value before normalization so extreme outliers
+# don't dominate the yield score and pull up high-crime/unstable ZIPs.
+YIELD_CAP = 0.12
+
+# ── Price Stability (ZHVI CoV) ────────────────────────────────────────────────
+# Number of years of ZHVI monthly data to use for stability calculation.
+# Coefficient of Variation (std/mean) over this period — lower = more stable.
+# For a 3-year hold, you want stable appreciation, not lottery-ticket volatility.
+ZHVI_STABILITY_YEARS = 5
+
 # ── Census API ────────────────────────────────────────────────────────────────
 CENSUS_YEAR = 2022
 CENSUS_TABLES = {
     "owner_occ_count":  "B25003_002E",
     "total_housing":    "B25003_001E",
     "median_hh_income": "B19013_001E",
-    "population":       "B01003_001E",  # required for crime per-1k normalization
+    "population":       "B01003_001E",
 }
 CENSUS_BASE_URL = "https://api.census.gov/data"
 
-# ── Google Maps (optional — falls back to geopy if None) ─────────────────────
+# ── Google Maps ───────────────────────────────────────────────────────────────
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", None)
 
 # ── San Antonio Open Data ─────────────────────────────────────────────────────

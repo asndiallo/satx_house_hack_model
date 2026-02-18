@@ -55,6 +55,7 @@ def rescore(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
         "crime":           "score_crime",
         "owner_occupancy": "score_owner_occupancy",
         "commute":         "score_commute",
+        "stability":       "score_stability",
     }
     missing = [col for col in score_map.values() if col not in df.columns]
     if missing:
@@ -85,16 +86,19 @@ def score_from_raw(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
         n = (series - mn) / (mx - mn)
         return 1 - n if invert else n
 
-    df["score_rent_to_price"]   = minmax(df["rent_to_price"])
+    df["rent_to_price_capped"] = df["rent_to_price"].clip(upper=0.12)
+    df["score_rent_to_price"]   = minmax(df["rent_to_price_capped"])
     df["score_crime"]           = minmax(df["crime_log"],       invert=True)
     df["score_owner_occupancy"] = minmax(df["owner_occ_pct"])
     df["score_commute"]         = minmax(df["commute_minutes"], invert=True)
+    df["score_stability"]       = minmax(df["zhvi_cov"], invert=True) if "zhvi_cov" in df.columns else 0.5
 
     df["final_score"] = sum(weights[f] * df[c] for f, c in {
         "rent_to_price":   "score_rent_to_price",
         "crime":           "score_crime",
         "owner_occupancy": "score_owner_occupancy",
         "commute":         "score_commute",
+        "stability":       "score_stability",
     }.items())
     df["rank"] = df["final_score"].rank(ascending=False, method="min").astype(int)
     return df.sort_values("rank")
