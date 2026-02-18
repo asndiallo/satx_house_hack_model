@@ -218,6 +218,9 @@ __marimo__/
 # macOS
 .DS_Store
 
+# IDE
+/.vscode/
+
 # Ignore CSV files
 data/**/**/*.csv
 outputs/**/**/*.csv
