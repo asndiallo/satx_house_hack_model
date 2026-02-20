@@ -9,7 +9,7 @@ import logging
 import pandas as pd
 import numpy as np
 
-from config import TARGET_METRO, ZHVI_STABILITY_YEARS
+from config import TARGET_METRO, ZHVI_STABILITY_YEARS, VIOLENT_CRIME_PROBLEMS, MIN_POPULATION_FOR_CRIME
 
 logger = logging.getLogger(__name__)
 
@@ -141,8 +141,6 @@ def process_crime(crime_df: pd.DataFrame, census_df: pd.DataFrame = None) -> pd.
     Pass census_df for population normalization. Without it, cross-ZIP
     comparison is meaningless and thresholds break.
     """
-    from config import VIOLENT_CRIME_PROBLEMS
-
     df = crime_df.copy()
 
     zip_col = next(
@@ -180,6 +178,19 @@ def process_crime(crime_df: pd.DataFrame, census_df: pd.DataFrame = None) -> pd.
         pop["population"] = pd.to_numeric(pop["population"], errors="coerce")
         crime_counts = crime_counts.merge(pop, on="zip", how="left")
         crime_counts = crime_counts[crime_counts["population"] > 0].copy()
+
+        # Drop ZIPs with population too small to produce a valid per-1k rate.
+        # Commercial corridors and fringe areas have near-zero Census residents
+        # but large incident counts — producing rates like 8,540/1k which corrupt
+        # the crime distribution and make the percentile floor meaningless.
+        thin = crime_counts["population"] < MIN_POPULATION_FOR_CRIME
+        if thin.sum() > 0:
+            logger.warning(
+                f"Dropping {thin.sum()} ZIP(s) with population < {MIN_POPULATION_FOR_CRIME:,} "
+                f"(unreliable per-1k rate). ZIPs: {sorted(crime_counts.loc[thin, 'zip'].tolist())}"
+            )
+            crime_counts = crime_counts[~thin].copy()
+
         crime_counts["crime_per_1k"] = (
             crime_counts["crime_incidents"] / crime_counts["population"] * 1000
         )

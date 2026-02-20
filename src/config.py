@@ -54,11 +54,15 @@ assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 # Anything here is a SCREEN, not a scored dimension.
 # Path B principle: if you won't compromise on it, make it a filter.
 THRESHOLDS = {
-    # Derived from SA cashflow math (not arbitrary):
+    # Derived from SA cashflow math — revised for 2026 market conditions:
     # VA loan 0% down, 6.5% rate, $250k home ~ $1,580/month PITI
     # Need ~$1,800/month rent to cover PITI + 5% vacancy + 8% maintenance reserve
-    # $1,800 * 12 / $250,000 = 0.0864 — setting 0.072 as minimum viable floor
-    "min_rent_to_price":  0.072,
+    # BUT: SA median home values have risen ~30% since 2022 without proportional rent growth.
+    # At $300k (more realistic 2026 SA median), break-even is ~$2,160/month rent —
+    # which most SA ZIPs cannot support. 0.065 reflects current market reality
+    # while still excluding ZIPs that genuinely don't cashflow on a VA loan.
+    # Revisit this annually as rates and prices shift.
+    "min_rent_to_price":  0.065,
 
     # SA 2026 conforming VA loan limit — adjust if your COE differs
     "max_home_value":     450_000,
@@ -81,6 +85,13 @@ THRESHOLDS = {
 # 0.45 = keep only the safest 45% of ZIPs by crime rate, where "safe" means "lower crime than 45% of other ZIPs".
 # You live in this property. This is not tradeable against yield.
 CRIME_PERCENTILE_CUTOFF = 0.45
+
+# Minimum population for a ZIP to get a crime per-1k rate.
+# Without this floor, commercial corridors and fringe ZIPs with ~100 Census residents
+# but thousands of daily workers produce absurd rates (e.g. 8,540/1k).
+# Those ZIPs are not residential neighborhoods — they have no place in this model.
+# 2,000 is conservative; raise to 5,000 if you want to exclude thin-data ZIPs entirely.
+MIN_POPULATION_FOR_CRIME = 2_000
 
 # Allowlist of SA CFS Problem types that represent actual criminal incidents.
 # Excludes medical emergencies, welfare checks, noise, traffic — activity, not crime.

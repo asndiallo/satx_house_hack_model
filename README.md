@@ -59,13 +59,14 @@ Anything you're unwilling to compromise on becomes a **filter** that removes ZIP
 
 ZIPs that fail any of these are removed entirely and never scored:
 
-| Filter                | Threshold         | Why                                                                                                                                     |
-| --------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Minimum gross yield   | 7.2%              | Math-derived: VA loan at 6.5%, $250k home needs ~$1,800/month rent to cover PITI + vacancy + maintenance. Below 7.2% it doesn't pencil. |
-| Maximum home price    | $450,000          | SA conforming VA loan limit — adjust to your COE                                                                                        |
-| Owner-occupancy range | 50%–80%           | Below 50% = too transient. Above 80% = low rental demand.                                                                               |
-| Minimum median income | $45,000           | Tenant base quality screen. Correlates with delinquency risk and resale strength. $45k ≈ E-5/E-6 pay range in SA.                       |
-| Crime floor           | Safer 50% of ZIPs | You live there. Safety is not a slider. Only the bottom half of the crime distribution qualifies.                                       |
+| Filter                | Threshold              | Why                                                                                                                                                                                                                        |
+| --------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Minimum gross yield   | 6.5%                   | VA loan 0% down, 6.5% rate on a 2026 SA median home (~$300k). SA home prices rose ~30% since 2022 without proportional rent growth — 7.2% is no longer achievable in most viable ZIPs. 6.5% is the current cashflow floor. |
+| Maximum home price    | $450,000               | SA conforming VA loan limit — adjust to your COE                                                                                                                                                                           |
+| Owner-occupancy range | 50%–80%                | Below 50% = too transient. Above 80% = low rental demand.                                                                                                                                                                  |
+| Minimum median income | $45,000                | Tenant base quality screen. Correlates with delinquency risk and resale strength. $45k ≈ E-5/E-6 pay range in SA.                                                                                                          |
+| Crime floor           | Safer 50% of ZIPs      | You live there. Safety is not a slider. Only the bottom half of the crime distribution qualifies.                                                                                                                          |
+| Commute to BAMC       | ≤ 35 min straight-line | You drive this daily. ZIPs beyond this are not candidates regardless of yield.                                                                                                                                             |
 
 ### Stage 2 — Scored Ranking (graded optimization)
 
@@ -96,6 +97,8 @@ Surviving ZIPs are ranked by a weighted composite of five factors:
 
 **What to look at in results:** The `crime_per_1k` column. Below 20 is genuinely quiet. 20–50 is moderate suburban. Above 50 should raise your eyebrows regardless of the score.
 
+One data cleaning step worth knowing: ZIPs with fewer than 2,000 Census residents are excluded from crime scoring entirely, even if they have incident data. Commercial corridors, industrial zones, and fringe areas can have near-zero resident populations but high dispatch activity — producing absurd rates like 8,500 incidents per 1,000 "residents." These are not residential neighborhoods and their rates would corrupt the entire distribution if included.
+
 ### 2. Rent-to-Price Ratio (25% of score)
 
 **What it measures:** Annual rental income divided by home purchase price.
@@ -104,15 +107,15 @@ Surviving ZIPs are ranked by a weighted composite of five factors:
 
 **Example:** $250,000 home, $1,700/month rent → `($1,700 × 12) ÷ $250,000 = 0.0816` (8.2% gross yield)
 
-**The 7.2% floor is math, not preference.** At 6.5% VA rate on a $250k home:
+**The 6.5% floor is math, not preference.** At 6.5% VA rate on a $300k home (closer to SA's 2026 median) home:
 
-- Monthly mortgage (PITI): ~$1,580
-- Add 5% vacancy reserve: +$79
-- Add 8% maintenance reserve: +$126
-- Total monthly need: ~$1,785
-- $1,785 × 12 / $250,000 = 0.0857
+- Monthly mortgage (PITI): ~$1,900
+- Add 5% vacancy reserve: +$95
+- Add 8% maintenance reserve: +$152
+- Total monthly need: ~$2,147
+- $2,147 × 12 / $300,000 = 0.0858
 
-  7.2% is set below break-even to allow for lower-priced ZIPs where the math shifts. If you're looking at $200k properties, the floor is conservative enough to keep viable options in.
+  6.5% is set below break-even to allow for lower-priced ZIPs where the math shifts. 6.5% yield on $300k = $1,950/month — that's the floor, not comfortable margin. ZIPs above 6.5% are viable; below it you're subsidizing your tenants.
 
 **The 12% yield cap:** In SA, gross yields above 12% almost always mean distressed pricing, deferred maintenance, or data noise — not a hidden gem. Capping yield at 12% before scoring prevents these ZIPs from ranking artificially high on yield while hiding structural problems.
 
@@ -430,6 +433,7 @@ Known data constraints:
 - **Census data** is from the 2022 ACS 5-year survey — some figures are a few years old
 - **Commute times** use straight-line estimates — verify specific routes with Google Maps
 - **Stability scoring** is backward-looking — past price stability doesn't guarantee future stability
+- **ZIPs with fewer than 2,000 Census residents are excluded from crime scoring** — their per-1k rates are mathematically unreliable and would corrupt the crime distribution.
 
 ---
 

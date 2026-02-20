@@ -12,13 +12,7 @@ import logging
 import pandas as pd
 import numpy as np
 
-from config import (
-    THRESHOLDS,
-    CRIME_PERCENTILE_CUTOFF,
-    YIELD_CAP,
-    MAX_COMMUTE_MINS,
-    MAX_COMMUTE_MILES,
-)
+from config import THRESHOLDS, CRIME_PERCENTILE_CUTOFF, YIELD_CAP, MAX_COMMUTE_MINS, MAX_COMMUTE_MILES
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +39,27 @@ def apply_hard_filters(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
     initial = len(df)
-    rent_to_price = pd.to_numeric(df["rent_to_price"], errors="coerce")
-    home_value = pd.to_numeric(df["median_home_value"], errors="coerce")
-    owner_occ = pd.to_numeric(df["owner_occ_pct"], errors="coerce")
 
     filters = {
-        "min_rent_to_price": rent_to_price >= THRESHOLDS["min_rent_to_price"],
-        "max_home_value": home_value <= THRESHOLDS["max_home_value"],
-        "min_owner_occ": owner_occ >= THRESHOLDS["min_owner_occ_pct"],
-        "max_owner_occ": owner_occ <= THRESHOLDS["max_owner_occ_pct"],
+        "min_rent_to_price":  df["rent_to_price"]      >= THRESHOLDS["min_rent_to_price"],
+        "max_home_value":     df["median_home_value"]   <= THRESHOLDS["max_home_value"],
+        "min_owner_occ":      df["owner_occ_pct"]       >= THRESHOLDS["min_owner_occ_pct"],
+        "max_owner_occ":      df["owner_occ_pct"]       <= THRESHOLDS["max_owner_occ_pct"],
     }
+
+    # Commute hard filter — 66-minute commute ZIPs should not appear in results at all.
+    # Unlike most filters this has a tolerance: straight-line estimates undercount by ~30%
+    # so the threshold is set loose (MAX_COMMUTE_MINS) and the score handles refinement.
+    # If commute data is missing, the filter is skipped with a warning — not ideal, but better than dropping ZIPs with data gaps.
+    if "commute_minutes" in df.columns:
+        filters["max_commute_mins"] = df["commute_minutes"] <= MAX_COMMUTE_MINS
+    elif "commute_miles" in df.columns:
+        filters["max_commute_miles"] = df["commute_miles"] <= MAX_COMMUTE_MILES
+    else:
+        logger.warning(
+            "No commute data found — commute filter skipped. "
+            "Check that commute_minutes or commute_miles is in the dataset."
+        )
 
     # Income filter — only apply if data is available (some ZIPs have Census gaps)
     if "median_hh_income" in df.columns:
@@ -64,16 +69,6 @@ def apply_hard_filters(df: pd.DataFrame) -> pd.DataFrame:
         ) | income_series.isna()  # don't drop ZIPs just because Census has a gap
     else:
         logger.warning("median_hh_income not in dataset — income filter skipped")
-
-    # Commute filter — use minutes when available, otherwise miles fallback.
-    if "commute_minutes" in df.columns:
-        commute_minutes = pd.to_numeric(df["commute_minutes"], errors="coerce")
-        filters["max_commute_mins"] = commute_minutes <= MAX_COMMUTE_MINS
-    elif "commute_miles" in df.columns:
-        commute_miles = pd.to_numeric(df["commute_miles"], errors="coerce")
-        filters["max_commute_miles"] = commute_miles <= MAX_COMMUTE_MILES
-    else:
-        logger.warning("No commute column found — commute hard filter skipped")
 
     mask = pd.Series(True, index=df.index)
     for name, condition in filters.items():
