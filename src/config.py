@@ -87,11 +87,28 @@ THRESHOLDS = {
 CRIME_PERCENTILE_CUTOFF = 0.45
 
 # Minimum population for a ZIP to get a crime per-1k rate.
-# Without this floor, commercial corridors and fringe ZIPs with ~100 Census residents
-# but thousands of daily workers produce absurd rates (e.g. 8,540/1k).
-# Those ZIPs are not residential neighborhoods — they have no place in this model.
-# 2,000 is conservative; raise to 5,000 if you want to exclude thin-data ZIPs entirely.
-MIN_POPULATION_FOR_CRIME = 2_000
+# Without this floor, commercial corridors and fringe ZIPs with low Census-enumerated
+# residents produce absurd rates (8,540/1k → 2,110/1k after 2k floor).
+# 5,000 is the right floor: below this, a ZIP is either non-residential or so sparse
+# that its crime rate has no predictive value for where you'll actually live.
+MIN_POPULATION_FOR_CRIME = 5_000
+
+# Absolute crime ceiling — applied BEFORE the percentile floor.
+# The percentile floor is relative and can be corrupted by outliers in a small pool.
+# This absolute cap ensures ZIPs with clearly unlivable crime rates are removed
+# regardless of how the rest of the pool distributes.
+#
+# 150/1k context (SA-specific):
+#   Quiet suburban: 10–40/1k
+#   Moderate: 40–100/1k
+#   High but livable: 100–150/1k
+#   Avoid: > 150/1k
+#
+# Starting at 300/1k to stay permissive while data is still being validated.
+# This removes clearly non-residential outlier ZIPs while keeping borderline
+# neighborhoods like 78233 (252/1k, close to top-ranked 78239/78109) in the pool.
+# Tighten to 150/1k once ground-truthing confirms which ZIPs are actually livable.
+MAX_CRIME_PER_1K = 300
 
 # Allowlist of SA CFS Problem types that represent actual criminal incidents.
 # Excludes medical emergencies, welfare checks, noise, traffic — activity, not crime.

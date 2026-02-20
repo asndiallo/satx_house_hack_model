@@ -97,7 +97,7 @@ Surviving ZIPs are ranked by a weighted composite of five factors:
 
 **What to look at in results:** The `crime_per_1k` column. Below 20 is genuinely quiet. 20–50 is moderate suburban. Above 50 should raise your eyebrows regardless of the score.
 
-One data cleaning step worth knowing: ZIPs with fewer than 2,000 Census residents are excluded from crime scoring entirely, even if they have incident data. Commercial corridors, industrial zones, and fringe areas can have near-zero resident populations but high dispatch activity — producing absurd rates like 8,500 incidents per 1,000 "residents." These are not residential neighborhoods and their rates would corrupt the entire distribution if included.
+One data cleaning step worth knowing: ZIPs with fewer than 5,000 Census residents are excluded from crime scoring entirely, even if they have incident data. Commercial corridors, industrial zones, and fringe areas can have near-zero resident populations but high dispatch activity — producing absurd rates like 8,500 incidents per 1,000 "residents." These are not residential neighborhoods and their rates would corrupt the entire distribution if included.
 
 ### 2. Rent-to-Price Ratio (25% of score)
 
@@ -433,7 +433,7 @@ Known data constraints:
 - **Census data** is from the 2022 ACS 5-year survey — some figures are a few years old
 - **Commute times** use straight-line estimates — verify specific routes with Google Maps
 - **Stability scoring** is backward-looking — past price stability doesn't guarantee future stability
-- **ZIPs with fewer than 2,000 Census residents are excluded from crime scoring** — their per-1k rates are mathematically unreliable and would corrupt the crime distribution.
+- **ZIPs with fewer than 5,000 Census residents are excluded from crime scoring** — their per-1k rates are mathematically unreliable and would corrupt the crime distribution.
 
 ---
 
