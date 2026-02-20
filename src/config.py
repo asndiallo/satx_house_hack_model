@@ -72,15 +72,15 @@ THRESHOLDS = {
 
     # Tenant base quality screen — low income correlates with:
     # higher delinquency risk, slower resale, weaker neighborhood trajectory
-    # $45k = roughly E-5/E-6 BAH + base pay range in SA — your target tenant
-    "min_median_income":  45_000,
+    # $42k = roughly E-5/E-6 BAH + base pay range in SA — your target tenant
+    "min_median_income":  42_000,
 }
 
 # ── Crime Filtering ───────────────────────────────────────────────────────────
 # Path B: crime is a hard screen, not a soft negotiable.
-# 0.50 = keep only the safer half of your ZIP pool.
+# 0.45 = keep only the safest 45% of ZIPs by crime rate, where "safe" means "lower crime than 45% of other ZIPs".
 # You live in this property. This is not tradeable against yield.
-CRIME_PERCENTILE_CUTOFF = 0.50
+CRIME_PERCENTILE_CUTOFF = 0.45
 
 # Allowlist of SA CFS Problem types that represent actual criminal incidents.
 # Excludes medical emergencies, welfare checks, noise, traffic — activity, not crime.

@@ -36,7 +36,16 @@ from feature_engineering import (
 )
 from commute import add_drive_time_google, add_straight_line_distance
 from scoring import compute_final_score, generate_summary_table
-from config import DATA_PROC, DATA_FINAL, OUTPUTS, THRESHOLDS, CRIME_PERCENTILE_CUTOFF, YIELD_CAP
+from config import (
+    DATA_PROC,
+    DATA_FINAL,
+    OUTPUTS,
+    THRESHOLDS,
+    CRIME_PERCENTILE_CUTOFF,
+    YIELD_CAP,
+    MAX_COMMUTE_MINS,
+    MAX_COMMUTE_MILES,
+)
 
 
 def parse_args():
@@ -80,6 +89,10 @@ def check_filters(df: pd.DataFrame) -> None:
     ]
     if "median_hh_income" in df.columns:
         checks.append(("median_hh_income >= min", "median_hh_income", ">=", THRESHOLDS["min_median_income"]))
+    if "commute_minutes" in df.columns:
+        checks.append(("commute_minutes <= max", "commute_minutes", "<=", MAX_COMMUTE_MINS))
+    elif "commute_miles" in df.columns:
+        checks.append(("commute_miles <= max", "commute_miles", "<=", MAX_COMMUTE_MILES))
 
     surviving = pd.Series([True] * len(df), index=df.index)
     for label, col, op, threshold in checks:
