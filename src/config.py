@@ -198,6 +198,13 @@ YIELD_CAP = 0.12
 # For a 3-year hold, you want stable appreciation, not lottery-ticket volatility.
 ZHVI_STABILITY_YEARS = 5
 
+# ── Home Value Appreciation (ZHVI CAGR) ───────────────────────────────────────
+# Annualized CAGR windows computed from ZHVI history for display in the output.
+# NOT used in scoring — pass-through context for equity-building decisions.
+# CoV answers "how bumpy is the ride?"; CAGR answers "where do you end up?"
+# Both matter for holds beyond 3 years.
+ZHVI_CAGR_WINDOWS = [5, 10]  # years
+
 # ── Census API ────────────────────────────────────────────────────────────────
 CENSUS_YEAR = 2022
 CENSUS_TABLES = {

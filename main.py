@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from utils import setup_logging, save_csv, load_zip_centroids
 from data_loader import load_zhvi, load_zori, load_census_acs, load_crime_data
 from preprocess import (
-    process_zhvi, compute_zhvi_stability,
+    process_zhvi, compute_zhvi_stability, compute_zhvi_cagr,
     process_zori, process_census, process_crime, merge_datasets
 )
 from feature_engineering import (
@@ -146,6 +146,7 @@ def run_pipeline(use_google_maps: bool = True, top_n: int = 15, diagnose_mode: b
 
     zhvi      = process_zhvi(zhvi_raw)
     stability = compute_zhvi_stability(zhvi_raw)    # from same ZHVI file, free
+    cagr      = compute_zhvi_cagr(zhvi_raw)         # from same ZHVI file, free
     zori      = process_zori(zori_raw)
     census    = process_census(census_raw)
     crime     = process_crime(crime_raw, census_df=census)
@@ -153,6 +154,7 @@ def run_pipeline(use_google_maps: bool = True, top_n: int = 15, diagnose_mode: b
     if diagnose_mode:
         diagnose("ZHVI processed",      zhvi,      ["median_home_value"])
         diagnose("ZHVI stability (CoV)", stability, ["zhvi_cov"])
+        diagnose("ZHVI CAGR",           cagr,      ["zhvi_cagr_5yr", "zhvi_cagr_10yr"])
         diagnose("ZORI processed",      zori,      ["median_rent"])
         diagnose("Census processed",    census,    ["owner_occ_pct", "median_hh_income"])
         diagnose("Crime processed",     crime,     ["crime_per_1k"])
@@ -196,7 +198,7 @@ def run_pipeline(use_google_maps: bool = True, top_n: int = 15, diagnose_mode: b
     logger.info("STEP 4: Merging datasets")
     logger.info("="*60)
 
-    merged = merge_datasets(zhvi, zori, census, crime, commute, stability=stability)
+    merged = merge_datasets(zhvi, zori, census, crime, commute, stability=stability, cagr=cagr)
     save_csv(merged, DATA_PROC / "merged_zip_dataset.csv", "merged")
 
     if merged.empty:

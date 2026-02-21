@@ -143,6 +143,8 @@ The minimum was raised from 40% to 50% compared to earlier versions. Below 50% =
 
 **Lower CoV = better.** A `zhvi_cov` of 0.05 means prices were very stable. A CoV of 0.20 means the market was volatile. This is free information from the ZHVI file you already download — it uses the full time-series instead of just the latest value.
 
+**CoV vs. CAGR:** CoV measures the _bumpiness_ of the price path. CAGR (`zhvi_cagr_5yr`, `zhvi_cagr_10yr`) measures the _direction_ — where you actually end up. Both are computed from the same ZHVI file. For a 3-year hold, CoV matters more (risk of being underwater at PCS). For a 5–15 year hold, 10yr CAGR matters more. The output includes both so you can weigh them against your actual timeline.
+
 ---
 
 ## How the Final Score Is Calculated
@@ -164,7 +166,7 @@ The model uses five sources. Two require a manual one-time download. Three are f
 ### Manual Downloads Required (One Time)
 
 1. Zillow Home Value Index (ZHVI)
-   - What it is: Monthly median home values by ZIP code. The model uses the most recent value AND the full 5-year time series for price stability scoring.
+   - What it is: Monthly median home values by ZIP code. The model uses the most recent value, the full 5-year time series for price stability scoring, and the longer history for CAGR calculations.
    - Where: [zillow.com/research/data](https://www.zillow.com/research/data/)
      - "Home Values" section → "ZHVI All Homes (SFR, Condo/Co-op) Time Series, Smoothed, Seasonally Adjusted"
      - Geography: ZIP code → Download
@@ -175,7 +177,12 @@ The model uses five sources. Two require a manual one-time download. Three are f
    - Where: Same page → "Rentals" → "ZORI (Smoothed): All Homes Plus Multifamily" → ZIP code → Download
    - Save as: `data/raw/zillow_zori_zip.csv`
 
-3. ZIP Code Coordinates (SimpleMaps)
+3. Zillow Home Value Forecast (ZHVF) _(required for notebook analysis)_
+   - What it is: ZIP-level forward-looking price change forecasts at 1-, 3-, and 12-month horizons. Used by both notebooks to analyze market timing and contextualize the 3-year P&L. Not used by the main pipeline scorer.
+   - Where: Same Zillow research page → "Home Values" → "ZHVF: ZIP Code Forecast" → Download
+   - Save as: `data/raw/zhvf_growth_zip.csv`
+
+4. ZIP Code Coordinates (SimpleMaps)
    - What it is: Latitude/longitude center point for every U.S. ZIP code — needed for commute distance calculation
    - Where: [simplemaps.com/data/us-zips](https://simplemaps.com/data/us-zips) → Free download
    - Save as: `data/raw/uszips.csv`
@@ -257,20 +264,22 @@ First run takes 2–4 minutes (crime data download). After that, cached files ma
 
 The output table printed to your terminal and saved to `outputs/top_zips_summary.csv`:
 
-| Column              | What It Means                                                                             |
-| ------------------- | ----------------------------------------------------------------------------------------- |
-| `rank`              | Overall rank. 1 = best.                                                                   |
-| `zip`               | ZIP code                                                                                  |
-| `median_home_value` | Estimated median home price                                                               |
-| `median_rent`       | Estimated median asking rent                                                              |
-| `rent_to_price`     | Gross yield (annual rent ÷ price). Raw value, before the 12% cap.                         |
-| `commute_minutes`   | Estimated drive time to BAMC                                                              |
-| `crime_per_1k`      | Criminal incidents per 1,000 residents. Lower = safer.                                    |
-| `owner_occ_pct`     | % of homes owner-occupied                                                                 |
-| `median_hh_income`  | Median household income — tenant base quality indicator                                   |
-| `zhvi_cov`          | Price volatility (Coefficient of Variation). Lower = more stable.                         |
-| `final_score`       | Composite score 0–1. Higher = better overall.                                             |
-| `weighted_*`        | Each factor's contribution to the final score — shows you _why_ a ZIP ranked where it did |
+| Column              | What It Means                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `rank`              | Overall rank. 1 = best.                                                                                             |
+| `zip`               | ZIP code                                                                                                            |
+| `median_home_value` | Estimated median home price                                                                                         |
+| `median_rent`       | Estimated median asking rent                                                                                        |
+| `rent_to_price`     | Gross yield (annual rent ÷ price). Raw value, before the 12% cap.                                                   |
+| `commute_minutes`   | Estimated drive time to BAMC                                                                                        |
+| `crime_per_1k`      | Criminal incidents per 1,000 residents. Lower = safer.                                                              |
+| `owner_occ_pct`     | % of homes owner-occupied                                                                                           |
+| `median_hh_income`  | Median household income — tenant base quality indicator                                                             |
+| `zhvi_cov`          | Price volatility (Coefficient of Variation). Lower = more stable.                                                   |
+| `zhvi_cagr_5yr`     | Annualized home value growth over the last 5 years. Display only — not scored.                                      |
+| `zhvi_cagr_10yr`    | Annualized home value growth over the last 10 years — the structural appreciation trend. Display only — not scored. |
+| `final_score`       | Composite score 0–1. Higher = better overall.                                                                       |
+| `weighted_*`        | Each factor's contribution to the final score — shows you _why_ a ZIP ranked where it did                           |
 
 **How to actually use the table:**
 
@@ -303,6 +312,46 @@ python sensitivity.py --top 8 --delta 0.15
 # Test filter dependency only (do your winners actually earn their rank?)
 python sensitivity.py --test filters
 ```
+
+---
+
+## Notebooks
+
+Two Jupyter notebooks go deeper than the pipeline output can. Run `jupyter notebook` from the project root.
+
+### `notebooks/01_eda.ipynb` — Exploratory Data Analysis
+
+Validates every model assumption before you trust the output. Each section answers a specific question about a data source:
+
+| Section               | Question answered                                                                                                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. ZHVI               | Where does the $450k ceiling cut? Is the stability metric actually discriminating?                                                                                               |
+| 2. ZORI / Yield       | Where does the 6.5% floor land in the SA distribution? Are there borderline ZIPs worth reviewing?                                                                                |
+| 3. Census             | Do the owner-occ and income filter thresholds reflect where SA's market actually clusters?                                                                                       |
+| 4. Crime              | What fraction of 5.3M dispatch calls is actually crime? Does the allowlist hold up?                                                                                              |
+| 5. Cross-source       | How many ZIPs survive each pipeline stage? What's the most constraining filter?                                                                                                  |
+| 6. Findings           | Structured template to record config change decisions as you investigate                                                                                                         |
+| 7. ZHVF (scored ZIPs) | For the ZIPs that made it through all filters: where have their prices been, where is Zillow's forecast pointing, and where in the 2022–2026 correction cycle does each one sit? |
+
+Section 7 requires `data/final/ranked_zip_scores.csv` (run the pipeline first) and `data/raw/zhvf_growth_zip.csv`.
+
+### `notebooks/02_cashflow.ipynb` — Property Cashflow Analysis
+
+Takes the ranked ZIPs and models the actual monthly money. Designed around two phases of a military house hack:
+
+- **Phase 1 (house hack):** Your net monthly out-of-pocket while you're stationed at BAMC and living in part of the property
+- **Phase 2 (full rental):** Monthly cashflow after PCS when all units are rented
+
+Key sections:
+
+- Monthly PITI breakdown and cost stack per ZIP
+- Break-even rent vs. ZORI estimate — how far above median do you need to be?
+- Minimum rental fraction needed to break even (1 room vs. half duplex vs. full unit)
+- 3-year hold P&L waterfall under $0 appreciation (conservative baseline)
+- Interest rate and rent sensitivity curves
+- **Section 9 — ZHVF Market Forecast:** Connects the pipeline's ZIP rankings to Zillow's forward-looking price data. Answers "when to buy" (wait vs. buy now analysis comparing price savings from forecasted decline against equity foregone) and "what to expect" (3-year P&L under ZHVF-informed appreciation scenarios)
+
+Requires `data/final/ranked_zip_scores.csv` and `data/raw/zhvf_growth_zip.csv`.
 
 ---
 
@@ -369,6 +418,14 @@ YIELD_CAP = 0.12  # yields above 12% are capped before scoring — not rewarded
 ```python
 ZHVI_STABILITY_YEARS = 5  # how many years of monthly ZHVI data to use for CoV
 ```
+
+### Long-Term Appreciation Windows
+
+```python
+ZHVI_CAGR_WINDOWS = [5, 10]  # years of ZHVI history for CAGR computation
+```
+
+These appear as `zhvi_cagr_5yr` and `zhvi_cagr_10yr` in the output — display-only context for equity-building decisions over longer holds. They do not affect scoring. The 10-year CAGR is the most useful signal for a 5–15 year hold; the 5-year CAGR reflects the post-2021 boom/bust cycle and will be negative for most SA ZIPs right now.
 
 ### Different Duty Station
 
@@ -466,8 +523,8 @@ satx_house_hack_model/
 **Pipeline execution order:**
 
 ```math
-Load → Process + ZHVI Stability → Commute → Merge → Hard Filters → Crime Floor →
-Yield Cap → Log Transform → Normalize → Score → Output
+Load → Process + ZHVI Stability + ZHVI CAGR → Commute → Merge → Hard Filters → Crime Floor →
+Yield Cap → Log Transform → Normalize → Score → Output (with CAGR columns)
 ```
 
 The `--diagnose` flag prints row counts, value ranges, and ZIP overlap counts after every step — use it to understand what's happening at each stage.

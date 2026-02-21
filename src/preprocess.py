@@ -9,7 +9,7 @@ import logging
 import pandas as pd
 import numpy as np
 
-from config import TARGET_METRO, ZHVI_STABILITY_YEARS, VIOLENT_CRIME_PROBLEMS, MIN_POPULATION_FOR_CRIME
+from config import TARGET_METRO, ZHVI_STABILITY_YEARS, ZHVI_CAGR_WINDOWS, VIOLENT_CRIME_PROBLEMS, MIN_POPULATION_FOR_CRIME
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,53 @@ def compute_zhvi_stability(df: pd.DataFrame) -> pd.DataFrame:
         f"CoV range: {result['zhvi_cov'].min():.4f} – {result['zhvi_cov'].max():.4f} "
         f"(lower = more stable)"
     )
+    return result
+
+
+def compute_zhvi_cagr(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute annualized home value growth rates (CAGR) from ZHVI history.
+
+    Complements zhvi_cov (stability) with directional signal:
+    - CoV answers "how volatile is the price path?"
+    - CAGR answers "where is the price actually going long-term?"
+
+    Both matter for equity-building over multi-year holds. CAGR is a
+    display-only column — it does not feed into scoring weights.
+    Windows are defined in config.ZHVI_CAGR_WINDOWS.
+    """
+    df = df.copy()
+    df = df[df["Metro"].str.contains(TARGET_METRO, na=False)]
+    df["zip"] = df["RegionName"].astype(str).str.zfill(5)
+
+    date_cols = sorted([c for c in df.columns if c[:4].isdigit()])
+    result = df[["zip"]].copy().reset_index(drop=True)
+
+    cagr_cols = []
+    for years in ZHVI_CAGR_WINDOWS:
+        col_name = f"zhvi_cagr_{years}yr"
+        n_months = years * 12
+        if len(date_cols) < n_months + 1:
+            logger.warning(
+                f"Insufficient ZHVI history for {years}yr CAGR "
+                f"({len(date_cols)} months available, need {n_months + 1}) — skipping"
+            )
+            continue
+        start_vals = pd.to_numeric(df[date_cols[-(n_months + 1)]], errors="coerce")
+        end_vals   = pd.to_numeric(df[date_cols[-1]],              errors="coerce")
+        result[col_name] = (end_vals.values / start_vals.values) ** (1 / years) - 1
+        cagr_cols.append(col_name)
+
+    result = result.dropna(subset=cagr_cols, how="all") if cagr_cols else result
+
+    if cagr_cols:
+        logger.info(
+            f"ZHVI CAGR: {len(result)} ZIPs | "
+            + " | ".join(
+                f"{c}: {result[c].min():.2%} – {result[c].max():.2%}"
+                for c in cagr_cols if c in result.columns
+            )
+        )
     return result
 
 
@@ -219,12 +266,15 @@ def merge_datasets(
     crime: pd.DataFrame,
     commute: pd.DataFrame,
     stability: pd.DataFrame = None,
+    cagr: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Inner-join all processed DataFrames on ZIP.
     ZIPs missing from any required source are dropped with explicit logging.
 
     stability is optional — if not provided, stability scoring is skipped.
+    cagr is optional — left-joined so ZIPs with insufficient ZHVI history
+    are not dropped; they simply get NaN CAGR columns.
     Population is dropped after merge (only needed for crime normalization).
     """
     datasets = {
@@ -244,6 +294,13 @@ def merge_datasets(
         dropped = before - len(base)
         if dropped > 0:
             logger.warning(f"{name} merge dropped {dropped} ZIPs (no matching data)")
+
+    # CAGR is display-only — left join so no ZIPs are dropped for missing history
+    if cagr is not None:
+        base = base.merge(cagr, on="zip", how="left")
+        cagr_cols = [c for c in cagr.columns if c != "zip"]
+        n_filled = base[cagr_cols[0]].notna().sum() if cagr_cols else 0
+        logger.info(f"CAGR merged (left join): {n_filled}/{len(base)} ZIPs have CAGR data")
 
     # Population was only needed for crime normalization — drop from final dataset
     if "population" in base.columns:

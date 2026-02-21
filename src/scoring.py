@@ -57,7 +57,7 @@ def generate_summary_table(df: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
         "rank", "zip",
         "median_home_value", "median_rent", "rent_to_price",
         "commute_minutes", "crime_per_1k", "owner_occ_pct",
-        "zhvi_cov", "median_hh_income",
+        "zhvi_cov", "zhvi_cagr_5yr", "zhvi_cagr_10yr", "median_hh_income",
         "final_score",
         "weighted_rent_to_price", "weighted_crime",
         "weighted_owner_occupancy", "weighted_commute", "weighted_stability",
@@ -74,6 +74,8 @@ def generate_summary_table(df: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
         "commute_minutes":   "{:.0f} min".format,
         "final_score":       "{:.3f}".format,
         "zhvi_cov":          "{:.4f}".format,
+        "zhvi_cagr_5yr":     "{:+.2%}".format,
+        "zhvi_cagr_10yr":    "{:+.2%}".format,
     }
     for col, fn in fmt.items():
         if col in summary.columns:
