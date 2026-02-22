@@ -173,7 +173,7 @@ The model uses five sources. Two require a manual one-time download. Three are f
    - Save as: `data/raw/zillow_zhvi_zip.csv`
 
 2. Zillow Observed Rent Index (ZORI)
-   - What it is: Monthly median asking rent by ZIP code
+   - What it is: Monthly median asking rent by ZIP code — a **per-unit** repeat-rent index, Census-weighted across all housing types (apartments, SFH, condos). Represents the market rate for one typical rental unit in the ZIP, not a whole-property number.
    - Where: Same page → "Rentals" → "ZORI (Smoothed): All Homes Plus Multifamily" → ZIP code → Download
    - Save as: `data/raw/zillow_zori_zip.csv`
 
@@ -312,6 +312,74 @@ python sensitivity.py --top 8 --delta 0.15
 # Test filter dependency only (do your winners actually earn their rank?)
 python sensitivity.py --test filters
 ```
+
+---
+
+## Property Analyzer — Evaluating a Specific Listing
+
+Once the pipeline has produced `ranked_zip_scores.csv`, you can evaluate any specific property listing you find on Zillow, Realtor.com, or anywhere else. The property analyzer pulls ZIP-level market data from the pipeline output and layers in your exact financing terms to produce a property-specific report.
+
+**Run the pipeline first**, then:
+
+```bash
+# Duplex at $265k in 78109, VA loan, with BAH
+python analyze_property.py --zip 78109 --price 265000 --units 2 --bah 1900
+
+# Triplex, known rent (ZORI may not reflect actual unit rents in this ZIP)
+python analyze_property.py --zip 78239 --price 320000 --units 3 --rent-override 1100
+
+# Room hack — SFH, 4 bedrooms, you keep 1, rent 3 at $650/room
+python analyze_property.py --zip 78239 --price 265000 --units 1 --bedrooms 4 \
+    --rooms-rented 3 --rent-override 650 --bah 1900
+
+# Conventional loan, 5% down
+python analyze_property.py --zip 78209 --price 285000 --units 2 \
+    --loan-type conventional --down-pct 5
+
+# JSON output for programmatic use
+python analyze_property.py --zip 78239 --price 215000 --units 2 --output json
+```
+
+### What the Report Covers
+
+The report is organized into 8 sections:
+
+| Section                     | What It Shows                                                                                                                 |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **1. ZIP Market Overview**  | Rank, score, median home value vs. asking, ZORI rent, commute, owner-occupancy, CAGR, ZHVF forecast                           |
+| **2. Crime Intelligence**   | Crime type breakdown (assault, theft, robbery, etc.), 12-month trend vs. prior year, peak day                                 |
+| **3. Negotiation Range**    | Max price at each yield target (6.5–8%), break-even price where tenant rent covers all costs                                  |
+| **4. Cashflow Analysis**    | Phase 1 (house hack) and Phase 2 (full rental) monthly income, expenses, and net — including homestead exemption, VA fee, BAH |
+| **5. 3-Year Hold P&L**      | Total return under flat, +3%, +5%, +8%/yr and ZHVF forecast appreciation scenarios                                            |
+| **6. Sensitivity Analysis** | Phase 2 net at 5–8.5% rates; Phase 1 net across hack fraction range                                                           |
+| **7. Filter Status**        | Pass/fail on every hard filter at the asking price, with the negotiation target to fix failures                               |
+| **8. Decision Scorecard**   | Quick yes/no checklist covering filters, cashflow, return, crime trend, and ZIP rank                                          |
+
+### Key Parameters
+
+| Flag              | Default  | Description                                                                                                  |
+| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
+| `--zip`           | required | 5-digit ZIP code                                                                                             |
+| `--price`         | required | Asking price in dollars                                                                                      |
+| `--units`         | 2        | 1=SFH, 2=duplex, 3=triplex, 4=fourplex                                                                       |
+| `--bedrooms`      | 3        | Total bedrooms (used in room-hack mode)                                                                      |
+| `--rooms-rented`  | —        | Room-hack mode: number of bedrooms to rent. Requires `--rent-override`.                                      |
+| `--bah`           | 0        | Monthly BAH — shown as offset to your out-of-pocket Phase 1 cost                                             |
+| `--rent-override` | —        | Per-unit rent (unit mode) or per-room rent (room-hack mode). Use when ZORI doesn't match actual comparables. |
+| `--rate`          | 6.875%   | Interest rate in percent                                                                                     |
+| `--loan-type`     | VA       | `VA` or `conventional`                                                                                       |
+| `--down-pct`      | 0        | Down payment in percent (e.g. `5` = 5%)                                                                      |
+| `--va-second-use` | —        | Flag for 3.30% funding fee (vs. 2.15% first use)                                                             |
+| `--hack-fraction` | auto     | Override fraction rented (auto-set from `--units` or `--rooms-rented`)                                       |
+
+### How ZORI Rent Is Used
+
+ZORI is a **per-unit** index — it represents the market rate for one typical rental unit in the ZIP (Census-weighted across apartments, houses, condos). The analyzer uses it accordingly:
+
+- **Unit hack (duplex, triplex…):** Phase 1 income = ZORI × `units` × `hack_fraction` · Phase 2 income = ZORI × `units`
+- **Room hack (SFH bedrooms):** Phase 1 income = per-room rate × `bedrooms` × `hack_fraction` · Phase 2 income = per-room rate × `bedrooms`
+
+This means a duplex at $265k with ZORI $1,686/unit has a _total_ annual potential of $1,686 × 2 × 12 = $40,464. The 6.5%-yield max price is $622k — not a bug, that's the correct investment math. If actual duplex units in that ZIP rent for less than ZORI, use `--rent-override` with real comparables.
 
 ---
 
@@ -454,16 +522,14 @@ Do a windshield survey on a weekday evening and a weekend morning. What you feel
 **3. Pull actual listings**
 Filter Zillow or Realtor.com to your surviving ZIPs. You're looking for duplexes, triplexes, or SFH with ADUs/garage apartments. If a ZIP ranks well but has zero relevant inventory, it's not a real option.
 
-**4. Run the actual cashflow math on specific properties**
-The model scores ZIP-level averages. Specific properties vary. For any property you're serious about, build a monthly cashflow sheet:
+**4. Run the property analyzer on specific listings**
+Use `analyze_property.py` to evaluate any property you're serious about. It runs the full cashflow math — Phase 1 house hack, Phase 2 full rental post-PCS, negotiation range, 3-year P&L, and sensitivity analysis — using your exact financing terms and the ZIP's market data.
 
-- Expected rent from tenant unit(s)
-- Monthly PITI (principal, interest, taxes, insurance)
-- Vacancy reserve (5% of gross rent)
-- Maintenance reserve (8% of gross rent)
-- Management (if applicable — even if you self-manage, budget for it for PCS planning)
+```bash
+python analyze_property.py --zip 78109 --price 265000 --units 2 --bah 1900
+```
 
-If the numbers work → proceed. If not → move to the next listing.
+If the Phase 1 break-even price is above asking and Phase 2 is cash-positive → proceed. If not → negotiate to the yield target price shown in Section 3, or move on.
 
 **5. Talk to a military-savvy SA agent**
 One who understands VA loans, house hacking, and the PCS resale cycle. They'll know things about specific blocks and micro-markets that no dataset captures.
@@ -501,21 +567,38 @@ satx_house_hack_model/
 │
 ├── data/
 │   ├── raw/              ← source files, never modified
-│   ├── processed/        ← merged intermediate dataset (generated)
+│   ├── processed/        ← merged intermediate dataset + crime caches (generated)
 │   └── final/            ← scored and ranked output (generated)
 │
 ├── src/
-│   ├── config.py         ← ALL tunable parameters: weights, thresholds, flags
-│   ├── data_loader.py    ← downloads and reads each raw data source
-│   ├── preprocess.py     ← cleans, filters crime by type, computes ZHVI stability, merges
-│   ├── feature_engineering.py  ← hard filters, crime floor, yield cap, log transforms, normalization
-│   ├── scoring.py        ← weighted combination, ranking, summary formatting
-│   ├── commute.py        ← Google Maps API + Haversine fallback
-│   └── utils.py          ← logging, file I/O helpers
+│   ├── config.py              ← ALL tunable parameters: weights, thresholds, flags
+│   ├── data_loader.py         ← downloads and reads each raw data source
+│   ├── preprocess.py          ← cleans, filters crime by type, computes ZHVI stability, merges
+│   ├── feature_engineering.py ← hard filters, crime floor, yield cap, log transforms, normalization
+│   ├── scoring.py             ← weighted combination, ranking, summary formatting
+│   ├── commute.py             ← Google Maps API + Haversine fallback
+│   ├── utils.py               ← logging, file I/O helpers
+│   └── property_analyzer.py   ← listing-level analysis engine (cashflow, negotiation, crime breakdown)
+│
+├── tests/                ← pytest unit tests (257 tests, run with `python -m pytest`)
+│   ├── conftest.py            ← shared fixtures and test data
+│   ├── test_input.py          ← PropertyInput dataclass tests
+│   ├── test_financing.py      ← mortgage math and cost component tests
+│   ├── test_cashflow.py       ← Phase 1 / Phase 2 cashflow tests
+│   ├── test_negotiation.py    ← yield targets, break-even, 3-yr P&L tests
+│   ├── test_sensitivity.py    ← rate and hack-fraction sensitivity tests
+│   ├── test_crime.py          ← crime categorization and cache I/O tests
+│   └── test_analyzer.py       ← integration tests for analyze_property()
+│
+├── notebooks/
+│   ├── 01_eda.ipynb           ← exploratory data analysis and assumption validation
+│   └── 02_cashflow.ipynb      ← cashflow modeling and ZHVF market timing analysis
 │
 ├── outputs/              ← final human-readable CSVs
 ├── main.py               ← full pipeline orchestrator (Path B logic)
+├── analyze_property.py   ← CLI for listing-level analysis (wraps property_analyzer.py)
 ├── sensitivity.py        ← weight stability + filter dependency robustness tests
+├── pytest.ini            ← test configuration
 ├── requirements.txt
 └── README.md
 ```
