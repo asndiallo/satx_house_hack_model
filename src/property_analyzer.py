@@ -125,13 +125,26 @@ class PropertyInput:
     hold_years: int = _HOLD_YRS
     selling_cost_pct: float = _SELL_COST
     bah_monthly: float = 0.0
-    rent_override: Optional[float] = None  # override ZORI median if you know actual rent
+    rent_override: Optional[float] = None  # per-unit (or per-room) monthly rent override
+    rooms_rented: Optional[int] = None     # room-hack mode: N bedrooms to rent (SFH Airbnb/room rental)
 
     def __post_init__(self):
         self.zip_code = str(self.zip_code).zfill(5)
-        if self.hack_fraction is None:
-            # Rent everything except the one unit you occupy
+        if self.rooms_rented is not None:
+            # Room-hack mode: rent individual bedrooms, not whole units
+            if self.hack_fraction is None:
+                self.hack_fraction = self.rooms_rented / max(self.bedrooms, 1)
+        elif self.hack_fraction is None:
+            # Unit-hack mode: rent (units-1) whole units, live in one
             self.hack_fraction = max(0.0, (self.units - 1) / max(self.units, 1))
+
+    @property
+    def rent_multiplier(self) -> int:
+        """Rentable capacity count used for income scaling.
+        Room mode: bedrooms (each rents at per-room rate).
+        Unit mode: units (each rents at per-unit ZORI).
+        """
+        return self.bedrooms if self.rooms_rented is not None else self.units
 
 
 # ── Mortgage helpers ──────────────────────────────────────────────────────────
@@ -194,24 +207,24 @@ def _variable_costs(gross_rent: float, mgmt_fee: float, prop: PropertyInput) -> 
 
 def _cashflow(price: float, median_rent: float, prop: PropertyInput, phase: int) -> Dict[str, Any]:
     """
-    phase=1: house hack — you live in one unit, rent prop.hack_fraction of property
+    phase=1: house hack — you live in one unit, rent prop.hack_fraction of the units
     phase=2: full rental post-PCS — entire property rented
 
-    Note on median_rent: follows the existing pipeline convention where
-    median_rent is the full-property ZORI estimate. Phase 1 income =
-    median_rent × hack_fraction. Use rent_override to correct for
-    specific property types if ZORI doesn't reflect your unit size.
+    median_rent is the ZORI per-unit market rate for the ZIP.
+    Phase 1 income = median_rent × units × hack_fraction
+                   (e.g. duplex: ZORI × 2 × 0.5 = 1 unit's rent)
+    Phase 2 income = median_rent × units  (all units rented at ZORI each)
     """
     loan = _loan_amount(price, prop)
     pi   = _monthly_pi(loan, prop.interest_rate, prop.loan_term_years)
     pmi  = _pmi_monthly(price, loan, prop)
 
     if phase == 1:
-        gross_rent = median_rent * prop.hack_fraction
+        gross_rent = median_rent * prop.rent_multiplier * prop.hack_fraction
         homestead  = True
         mgmt_fee   = prop.mgmt_fee_phase1
     else:
-        gross_rent = median_rent
+        gross_rent = median_rent * prop.rent_multiplier
         homestead  = False
         mgmt_fee   = prop.mgmt_fee_phase2
 
@@ -315,13 +328,14 @@ def _rate_sensitivity(price: float, median_rent: float, prop: PropertyInput) -> 
     results = []
     loan = _loan_amount(price, prop)
     pmi  = _pmi_monthly(price, loan, prop)
+    full_rent = median_rent * prop.rent_multiplier
     fixed    = _fixed_costs(price, prop, homestead=False)
-    variable = _variable_costs(median_rent, prop.mgmt_fee_phase2, prop)
+    variable = _variable_costs(full_rent, prop.mgmt_fee_phase2, prop)
     base_non_pi = pmi + sum(fixed.values()) + sum(variable.values())
 
     for r in rates:
         pi  = _monthly_pi(loan, r, prop.loan_term_years)
-        net = median_rent - (pi + base_non_pi)
+        net = full_rent - (pi + base_non_pi)
         results.append({
             "rate":    r,
             "pi":      pi,
@@ -341,7 +355,7 @@ def _hack_fraction_sensitivity(price: float, median_rent: float, prop: PropertyI
     fixed = _fixed_costs(price, prop, homestead=True)  # Phase 1 = homestead
 
     for f in fractions:
-        gross_rent = median_rent * f
+        gross_rent = median_rent * prop.rent_multiplier * f
         variable   = _variable_costs(gross_rent, prop.mgmt_fee_phase1, prop)
         total_exp  = pi + pmi + sum(fixed.values()) + sum(variable.values())
         net        = gross_rent - total_exp
@@ -555,9 +569,9 @@ def _compute_commute_fallback(zip_code: str) -> Optional[Tuple[float, float]]:
 
 # ── Hard filter evaluation ────────────────────────────────────────────────────
 
-def _evaluate_filters(row: pd.Series, asking_price: float, median_rent: float) -> Dict:
-    """Check each hard filter against the asking price (and against the yield-target price)."""
-    annual_rent = median_rent * 12.0
+def _evaluate_filters(row: pd.Series, asking_price: float, annual_rent: float) -> Dict:
+    """Check each hard filter against the asking price (and against the yield-target price).
+    annual_rent = ZORI_per_unit × units × 12 (caller is responsible for units scaling)."""
     yield_at_ask = annual_rent / asking_price if asking_price > 0 else 0.0
     yield_target_price = _max_price_for_yield(THRESHOLDS["min_rent_to_price"], annual_rent)
 
@@ -643,12 +657,20 @@ def analyze_property(prop: PropertyInput) -> Dict[str, Any]:
             "It may be outside the San Antonio metro area or missing from source data."
         )
 
-    # Use rent_override if provided, else ZORI median
+    # Room-hack mode requires an explicit per-room rate (ZORI is per-unit, not per-bedroom)
+    if prop.rooms_rented is not None and prop.rent_override is None:
+        raise ValueError(
+            f"Room-hack mode (--rooms-rented {prop.rooms_rented}) requires --rent-override "
+            f"with the per-room monthly rate. ZORI doesn't provide per-bedroom estimates. "
+            f"Check Airbnb/Zillow comparables for room rents in {prop.zip_code}."
+        )
+
+    # Use rent_override if provided, else ZORI median (per-unit)
     median_rent = prop.rent_override if prop.rent_override else float(row.get("median_rent", 0))
     if median_rent <= 0:
         raise ValueError(f"No rent data for ZIP {prop.zip_code}. Use --rent-override to specify expected rent.")
 
-    annual_rent  = median_rent * 12.0
+    annual_rent  = median_rent * prop.rent_multiplier * 12.0
     gross_yield  = annual_rent / prop.asking_price
 
     # Market context
@@ -697,7 +719,7 @@ def analyze_property(prop: PropertyInput) -> Dict[str, Any]:
     hack_sens  = _hack_fraction_sensitivity(prop.asking_price, median_rent, prop)
 
     # Filter status
-    filters = _evaluate_filters(row, prop.asking_price, median_rent)
+    filters = _evaluate_filters(row, prop.asking_price, annual_rent)
     if "crime" in filters and crime_cutoff is not None:
         crime_val = float(row.get("crime_per_1k", 0))
         filters["crime"]["pass"] = crime_val <= crime_cutoff
@@ -904,9 +926,17 @@ def format_report(r: Dict[str, Any]) -> str:
     # ── 3. NEGOTIATION RANGE ──────────────────────────────────────────────────
     section("3. NEGOTIATION RANGE")
     hack_pct = prop.hack_fraction * 100
-    lines.append(f"  ZORI median rent: ${r['median_rent']:,.0f}/mo  |  Annual potential: ${r['annual_rent']:,.0f}/yr")
-    unit_label2 = f"{prop.units}-unit" if prop.units > 1 else "SFH"
-    lines.append(f"  Hack setup: {unit_label2}, {hack_pct:.0f}% rented while you occupy the rest")
+    if prop.rooms_rented is not None:
+        rent_src  = "Per-room rate (override)"
+        ann_note  = f"{prop.rent_multiplier} bedrooms × ${r['median_rent']:,.0f} × 12"
+        hack_desc = f"SFH, {prop.rooms_rented} of {prop.bedrooms} bedrooms rented (room/Airbnb hack)"
+    else:
+        rent_src  = "ZORI median rent (per unit)"
+        ann_note  = f"{prop.rent_multiplier} unit{'s' if prop.rent_multiplier > 1 else ''} × ${r['median_rent']:,.0f} × 12"
+        unit_label2 = f"{prop.units}-unit" if prop.units > 1 else "SFH"
+        hack_desc = f"{unit_label2}, {hack_pct:.0f}% rented while you occupy the rest"
+    lines.append(f"  {rent_src}: ${r['median_rent']:,.0f}/mo  |  Annual: ${r['annual_rent']:,.0f}/yr  ({ann_note})")
+    lines.append(f"  Hack setup: {hack_desc}")
     lines.append("")
     lines.append(f"  Max price by gross yield target:")
     lines.append(f"  {'Target':<10} {'Max Price':>12}  {'vs Asking':>12}  Note")
@@ -998,7 +1028,8 @@ def format_report(r: Dict[str, Any]) -> str:
         bar_str = "█" * bar_len
         lines.append(f"  {s['rate']:.1%}   {_sign(s['net'])}${abs(s['net']):>5,.0f}  {v}  {bar_str}{marker}")
 
-    lines.append(f"\n  Phase 1 monthly cost vs. hack fraction:")
+    frac_label = "fraction of bedrooms rented" if prop.rooms_rented is not None else "hack fraction"
+    lines.append(f"\n  Phase 1 monthly cost vs. {frac_label}:")
     lines.append(f"  {'Fraction':>8}   {'Rent Income':>12}   {'Monthly Net':>12}   {'With BAH':>10}")
     lines.append(f"  {'─'*52}")
     for s in r["hack_sensitivity"]:
