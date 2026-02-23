@@ -193,11 +193,21 @@ class PropertyInput:
 
     @property
     def rent_multiplier(self) -> int:
-        """Rentable capacity count used for income scaling.
-        Room mode: bedrooms (each rents at per-room rate).
-        Unit mode: units (each rents at per-unit ZORI).
+        """Full rentable capacity — all rooms or all units.
+        Room mode: total bedrooms (used for Phase 2 full-rental income).
+        Unit mode: total units (used for Phase 2 full-rental income).
         """
         return self.bedrooms if self.rooms_rented is not None else self.units
+
+    @property
+    def phase1_rent_multiplier(self) -> int:
+        """Units/rooms actually generating rental income in Phase 1 (hack phase).
+        Room mode: rooms_rented (not total bedrooms).
+        Unit mode: units - 1 (rented units while you occupy one).
+        """
+        if self.rooms_rented is not None:
+            return self.rooms_rented
+        return max(0, self.units - 1)
 
 
 # ── Mortgage helpers ──────────────────────────────────────────────────────────
@@ -1065,7 +1075,7 @@ def analyze_property(prop: PropertyInput) -> Dict[str, Any]:
             f"No rent data for ZIP {prop.zip_code}. Use --rent-override to specify expected rent."
         )
 
-    annual_rent = median_rent * prop.rent_multiplier * 12.0
+    annual_rent = median_rent * prop.phase1_rent_multiplier * 12.0
     gross_yield = annual_rent / prop.asking_price
 
     # Market context
@@ -1435,13 +1445,14 @@ def format_report(r: Dict[str, Any]) -> str:
             if prop.rent_override is not None
             else "Est. room rent (pipeline: ZORI ÷ median rooms)"
         )
-        ann_note = f"{prop.rent_multiplier} bedrooms × ${r['median_rent']:,.0f} × 12"
+        ann_note = f"{prop.rooms_rented} of {prop.bedrooms} bedrooms × ${r['median_rent']:,.0f} × 12"
         hack_desc = (
             f"SFH, {prop.rooms_rented} of {prop.bedrooms} bedrooms rented (room hack)"
         )
     else:
         rent_src = "ZORI median rent (per unit)"
-        ann_note = f"{prop.rent_multiplier} unit{'s' if prop.rent_multiplier > 1 else ''} × ${r['median_rent']:,.0f} × 12"
+        rented_units = prop.phase1_rent_multiplier
+        ann_note = f"{rented_units} unit{'s' if rented_units > 1 else ''} × ${r['median_rent']:,.0f} × 12"
         unit_label2 = f"{prop.units}-unit" if prop.units > 1 else "SFH"
         hack_desc = f"{unit_label2}, {hack_pct:.0f}% rented while you occupy the rest"
     lines.append(
