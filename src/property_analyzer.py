@@ -8,48 +8,65 @@ Outputs: crime breakdown, negotiation range, cashflow (Phase 1/2), 3-yr P&L,
          sensitivity analysis, filter status, decision scorecard
 """
 
-import sys
 import logging
+import sys
 from dataclasses import dataclass
+from dataclasses import replace as dc_replace
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
-    DATA_FINAL, DATA_PROC, DATA_RAW,
-    THRESHOLDS, CRIME_PERCENTILE_CUTOFF, MAX_COMMUTE_MINS, MAX_COMMUTE_MILES,
-    VIOLENT_CRIME_PROBLEMS, YIELD_CAP, DUTY_STATION, MIN_POPULATION_FOR_CRIME,
+    CAGR_5YR_GREEN,
+    CAGR_5YR_YELLOW,
+    COC_GREEN,
+    COC_YELLOW,
+    CRIME_PERCENTILE_CUTOFF,
+    CRIME_TIER_THRESHOLDS,
+    DATA_FINAL,
+    DATA_PROC,
+    DATA_RAW,
+    DUTY_STATION,
+    EXIT_NEUTRAL_YELLOW,
+    MAX_COMMUTE_MINS,
+    PHASE2_CAUTION_FLOOR,
+    PHASE2_SURVIVAL_FLOOR,
+    PRICE_PREMIUM_GREEN,
+    PRICE_PREMIUM_YELLOW,
+    STRESS_RATE_DELTA,
+    STRESS_RENT_GROWTH,
+    THRESHOLDS,
+    VIOLENT_CRIME_PROBLEMS,
 )
 
 logger = logging.getLogger(__name__)
 
 # ── File paths ────────────────────────────────────────────────────────────────
-_RANKED_PATH         = DATA_FINAL / "ranked_zip_scores.csv"
-_MERGED_PATH         = DATA_PROC  / "merged_zip_dataset.csv"
-_ZHVF_PATH           = DATA_RAW   / "zhvf_growth_zip.csv"
-_CRIME_RAW_PATH      = DATA_RAW   / "sa_crime_raw.csv"
-_CRIME_TYPE_CACHE    = DATA_PROC  / "crime_type_by_zip.csv"
-_CRIME_WEEKDAY_CACHE = DATA_PROC  / "crime_weekday_by_zip.csv"
+_RANKED_PATH = DATA_FINAL / "ranked_zip_scores.csv"
+_MERGED_PATH = DATA_PROC / "merged_zip_dataset.csv"
+_ZHVF_PATH = DATA_RAW / "zhvf_growth_zip.csv"
+_CRIME_RAW_PATH = DATA_RAW / "sa_crime_raw.csv"
+_CRIME_TYPE_CACHE = DATA_PROC / "crime_type_by_zip.csv"
+_CRIME_WEEKDAY_CACHE = DATA_PROC / "crime_weekday_by_zip.csv"
 
 # ── Financing defaults ────────────────────────────────────────────────────────
-_VA_FEE_FIRST  = 0.0215   # VA funding fee, first use
-_VA_FEE_SUBSEQ = 0.0330   # VA funding fee, subsequent use
-_PMI_ANNUAL    = 0.0085   # Conventional PMI when LTV > 80%
-_PROP_TAX      = 0.022    # Bexar County effective rate
-_INS_PER_1K    = 1.50     # Annual insurance per $1,000 of value
-_VACANCY       = 0.05
-_MAINT         = 0.09
-_MGMT_P1       = 0.00     # Self-manage while living there
-_MGMT_P2       = 0.08     # Hired manager post-PCS
-_HOLD_YRS      = 3
-_SELL_COST     = 0.08     # Realtor + closing costs
-_HOMESTEAD_EX  = 100_000  # Texas homestead exemption
-_RATE          = 0.06875  # Feb 2026 VA 30yr average
-_TERM          = 30
+_VA_FEE_FIRST = 0.0215  # VA funding fee, first use
+_VA_FEE_SUBSEQ = 0.0330  # VA funding fee, subsequent use
+_PMI_ANNUAL = 0.0085  # Conventional PMI when LTV > 80%
+_PROP_TAX = 0.022  # Bexar County effective rate
+_INS_PER_1K = 1.50  # Annual insurance per $1,000 of value
+_VACANCY = 0.05
+_MAINT = 0.09
+_MGMT_P1 = 0.00  # Self-manage while living there
+_MGMT_P2 = 0.08  # Hired manager post-PCS
+_HOLD_YRS = 3
+_SELL_COST = 0.08  # Realtor + closing costs
+_HOMESTEAD_EX = 100_000  # Texas homestead exemption
+_RATE = 0.06875  # Feb 2026 VA 30yr average
+_TERM = 30
 
 # ── Appreciation scenarios for 3-yr P&L ──────────────────────────────────────
 # ZHVF scenario is filled at runtime from actual ZHVF data for the ZIP
@@ -58,38 +75,65 @@ _APPRECIATION_SCENARIOS = [0.00, 0.03, 0.05, 0.08]
 # ── Crime display categories ──────────────────────────────────────────────────
 _CRIME_CATEGORIES: Dict[str, set] = {
     "Assault & Violence": {
-        "ASSAULT", "ASSAULT IN PROGRESS", "FAMILY VIOLENCE",
-        "FAMILY VIOLENCE GUN INV", "FAMILY VIOLENCE KNIFE INV",
-        "CUTTING", "CUTTING IN PROGRESS",
-        "DISTURBANCE (GUN INVOLVED)", "DISTURBANCE (KNIFE INVOLVED)",
-        "DISTURBANCE FAMILY GUN INV", "DISTURBANCE FAMILY KNIFE INV",
-        "DISTURBANCE NEIGHBOR GUN INV", "DISTURBANCE NEIGHBOR KNIFE IN",
-        "FIGHT", "FIGHT GUN INVOLVED", "FIGHT KNIFE INVOLVED",
+        "ASSAULT",
+        "ASSAULT IN PROGRESS",
+        "FAMILY VIOLENCE",
+        "FAMILY VIOLENCE GUN INV",
+        "FAMILY VIOLENCE KNIFE INV",
+        "CUTTING",
+        "CUTTING IN PROGRESS",
+        "DISTURBANCE (GUN INVOLVED)",
+        "DISTURBANCE (KNIFE INVOLVED)",
+        "DISTURBANCE FAMILY GUN INV",
+        "DISTURBANCE FAMILY KNIFE INV",
+        "DISTURBANCE NEIGHBOR GUN INV",
+        "DISTURBANCE NEIGHBOR KNIFE IN",
+        "FIGHT",
+        "FIGHT GUN INVOLVED",
+        "FIGHT KNIFE INVOLVED",
     },
     "Theft & Burglary": {
-        "BURGLARY", "BURGLARY (IN PROGRESS)", "BURGLARY VEHICLE",
-        "BURGLARY VEHICLE IN PROGRESS", "THEFT", "THEFT IN PROGRESS",
-        "THEFT OF VEHICLE", "THEFT OF VEHICLE IN PROGRESS",
+        "BURGLARY",
+        "BURGLARY (IN PROGRESS)",
+        "BURGLARY VEHICLE",
+        "BURGLARY VEHICLE IN PROGRESS",
+        "THEFT",
+        "THEFT IN PROGRESS",
+        "THEFT OF VEHICLE",
+        "THEFT OF VEHICLE IN PROGRESS",
     },
     "Robbery": {
-        "ROBBERY", "ROBBERY IN PROGRESS", "ROBBERY OF INDIVIDUAL",
-        "ROBBERY OF INDIVIDUAL PROGRES", "HOLDUP ALARM IN PROGRESS",
+        "ROBBERY",
+        "ROBBERY IN PROGRESS",
+        "ROBBERY OF INDIVIDUAL",
+        "ROBBERY OF INDIVIDUAL PROGRES",
+        "HOLDUP ALARM IN PROGRESS",
         "HOLDUP ALARM RES IN PROGRESS",
     },
     "Weapons & Shooting": {
-        "SHOOTING", "SHOOTING IN PROGRESS", "SHOTS FIRED JUST OCCURRED",
-        "SHOT FIRED/HEARD", "SHOTSPOTTER SINGLE ALERT",
-        "SHOTSPOTTER MULTIPLE ALERT", "WEAPONS",
+        "SHOOTING",
+        "SHOOTING IN PROGRESS",
+        "SHOTS FIRED JUST OCCURRED",
+        "SHOT FIRED/HEARD",
+        "SHOTSPOTTER SINGLE ALERT",
+        "SHOTSPOTTER MULTIPLE ALERT",
+        "WEAPONS",
     },
     "Narcotics & Vice": {"NARCOTIC LAWS", "VICE"},
     "Sexual Violence": {
-        "RAPE", "RAPE IN PROGRESS", "SEXUAL OFFENSE-CHILD",
-        "INTERNET PREDATOR", "LEWD CONDUCT",
+        "RAPE",
+        "RAPE IN PROGRESS",
+        "SEXUAL OFFENSE-CHILD",
+        "INTERNET PREDATOR",
+        "LEWD CONDUCT",
     },
     "Threats & Arson": {
-        "VIOLATION OF PROTECTIVE ORDER", "VIOLATION SEX OFF REG",
-        "THREATS BOMB", "THREATS BOMB IN PROGRESS",
-        "THREAT - BOMB WITH DEVICE", "ARSON RESPONSE",
+        "VIOLATION OF PROTECTIVE ORDER",
+        "VIOLATION SEX OFF REG",
+        "THREATS BOMB",
+        "THREATS BOMB IN PROGRESS",
+        "THREAT - BOMB WITH DEVICE",
+        "ARSON RESPONSE",
     },
 }
 
@@ -103,13 +147,16 @@ def _categorize(problem_upper: str) -> str:
 
 # ── Input ─────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class PropertyInput:
     zip_code: str
     asking_price: float
-    units: int = 2                        # 1=SFH/condo, 2=duplex, 3=triplex, 4=fourplex
+    units: int = 2  # 1=SFH/condo, 2=duplex, 3=triplex, 4=fourplex
     bedrooms: int = 3
-    hack_fraction: Optional[float] = None # fraction of property rented; auto-set from units
+    hack_fraction: Optional[float] = (
+        None  # fraction of property rented; auto-set from units
+    )
     loan_type: str = "VA"
     down_pct: float = 0.0
     interest_rate: float = _RATE
@@ -125,8 +172,12 @@ class PropertyInput:
     hold_years: int = _HOLD_YRS
     selling_cost_pct: float = _SELL_COST
     bah_monthly: float = 0.0
-    rent_override: Optional[float] = None  # per-unit (or per-room) monthly rent override
-    rooms_rented: Optional[int] = None     # room-hack mode: N bedrooms to rent (SFH Airbnb/room rental)
+    rent_override: Optional[float] = (
+        None  # per-unit (or per-room) monthly rent override
+    )
+    rooms_rented: Optional[int] = (
+        None  # room-hack mode: N bedrooms to rent (SFH Airbnb/room rental)
+    )
 
     def __post_init__(self):
         self.zip_code = str(self.zip_code).zfill(5)
@@ -149,6 +200,7 @@ class PropertyInput:
 
 # ── Mortgage helpers ──────────────────────────────────────────────────────────
 
+
 def _loan_amount(price: float, prop: PropertyInput) -> float:
     base = price * (1.0 - prop.down_pct)
     if prop.loan_type.upper() == "VA":
@@ -165,7 +217,9 @@ def _monthly_pi(loan: float, rate: float, term_years: int) -> float:
     return loan * (r * (1.0 + r) ** n) / ((1.0 + r) ** n - 1.0)
 
 
-def _remaining_balance(loan: float, rate: float, term_years: int, years_paid: int) -> float:
+def _remaining_balance(
+    loan: float, rate: float, term_years: int, years_paid: int
+) -> float:
     r = rate / 12.0
     n = term_years * 12
     p = years_paid * 12
@@ -184,28 +238,36 @@ def _pmi_monthly(price: float, loan: float, prop: PropertyInput) -> float:
 
 # ── Cost components ───────────────────────────────────────────────────────────
 
-def _fixed_costs(price: float, prop: PropertyInput, homestead: bool = False) -> Dict[str, float]:
+
+def _fixed_costs(
+    price: float, prop: PropertyInput, homestead: bool = False
+) -> Dict[str, float]:
     """Property-value-based costs: tax, insurance, HOA."""
     taxable = max(0.0, price - _HOMESTEAD_EX) if homestead else price
     return {
         "property_tax": taxable * prop.property_tax_pct / 12.0,
-        "insurance":    price / 1000.0 * prop.insurance_per_1k / 12.0,
-        "hoa":          prop.hoa_monthly,
+        "insurance": price / 1000.0 * prop.insurance_per_1k / 12.0,
+        "hoa": prop.hoa_monthly,
     }
 
 
-def _variable_costs(gross_rent: float, mgmt_fee: float, prop: PropertyInput) -> Dict[str, float]:
+def _variable_costs(
+    gross_rent: float, mgmt_fee: float, prop: PropertyInput
+) -> Dict[str, float]:
     """Rent-based costs: vacancy, maintenance, management."""
     return {
-        "vacancy":     gross_rent * prop.vacancy_rate,
+        "vacancy": gross_rent * prop.vacancy_rate,
         "maintenance": gross_rent * prop.maintenance_pct,
-        "management":  gross_rent * mgmt_fee,
+        "management": gross_rent * mgmt_fee,
     }
 
 
 # ── Cashflow ──────────────────────────────────────────────────────────────────
 
-def _cashflow(price: float, median_rent: float, prop: PropertyInput, phase: int) -> Dict[str, Any]:
+
+def _cashflow(
+    price: float, median_rent: float, prop: PropertyInput, phase: int
+) -> Dict[str, Any]:
     """
     phase=1: house hack — you live in one unit, rent prop.hack_fraction of the units
     phase=2: full rental post-PCS — entire property rented
@@ -216,38 +278,39 @@ def _cashflow(price: float, median_rent: float, prop: PropertyInput, phase: int)
     Phase 2 income = median_rent × units  (all units rented at ZORI each)
     """
     loan = _loan_amount(price, prop)
-    pi   = _monthly_pi(loan, prop.interest_rate, prop.loan_term_years)
-    pmi  = _pmi_monthly(price, loan, prop)
+    pi = _monthly_pi(loan, prop.interest_rate, prop.loan_term_years)
+    pmi = _pmi_monthly(price, loan, prop)
 
     if phase == 1:
         gross_rent = median_rent * prop.rent_multiplier * prop.hack_fraction
-        homestead  = True
-        mgmt_fee   = prop.mgmt_fee_phase1
+        homestead = True
+        mgmt_fee = prop.mgmt_fee_phase1
     else:
         gross_rent = median_rent * prop.rent_multiplier
-        homestead  = False
-        mgmt_fee   = prop.mgmt_fee_phase2
+        homestead = False
+        mgmt_fee = prop.mgmt_fee_phase2
 
-    fixed    = _fixed_costs(price, prop, homestead=homestead)
+    fixed = _fixed_costs(price, prop, homestead=homestead)
     variable = _variable_costs(gross_rent, mgmt_fee, prop)
 
     total_expense = pi + pmi + sum(fixed.values()) + sum(variable.values())
-    net           = gross_rent - total_expense
+    net = gross_rent - total_expense
 
     return {
-        "gross_rent":    gross_rent,
-        "pi":            pi,
-        "pmi":           pmi,
-        "loan_amount":   loan,
-        "fixed":         fixed,
-        "variable":      variable,
+        "gross_rent": gross_rent,
+        "pi": pi,
+        "pmi": pmi,
+        "loan_amount": loan,
+        "fixed": fixed,
+        "variable": variable,
         "total_expense": total_expense,
-        "net":           net,
-        "net_with_bah":  net + prop.bah_monthly if phase == 1 else net,
+        "net": net,
+        "net_with_bah": net + prop.bah_monthly if phase == 1 else net,
     }
 
 
 # ── Negotiation helpers ───────────────────────────────────────────────────────
+
 
 def _max_price_for_yield(target_yield: float, annual_rent: float) -> float:
     """Gross yield = annual_rent / price → max_price = annual_rent / target_yield."""
@@ -268,13 +331,14 @@ def _breakeven_price_phase1(median_rent: float, prop: PropertyInput) -> float:
         mid = (lo + hi) / 2.0
         net = _cashflow(mid, median_rent, prop, phase=1)["net"]
         if net > 0:
-            lo = mid   # still profitable — can afford higher price
+            lo = mid  # still profitable — can afford higher price
         else:
-            hi = mid   # costs exceed income — need lower price
+            hi = mid  # costs exceed income — need lower price
     return (lo + hi) / 2.0
 
 
 # ── 3-Year P&L ────────────────────────────────────────────────────────────────
+
 
 def _three_year_pnl(
     price: float,
@@ -283,93 +347,340 @@ def _three_year_pnl(
     zhvf_12mo: Optional[float] = None,
 ) -> List[Dict]:
     """3-year hold P&L under multiple appreciation scenarios."""
-    loan        = _loan_amount(price, prop)
-    down_paid   = price * prop.down_pct
-    cf          = _cashflow(price, median_rent, prop, phase=1)
+    loan = _loan_amount(price, prop)
+    down_paid = price * prop.down_pct
+    cf = _cashflow(price, median_rent, prop, phase=1)
     net_monthly = cf["net"]
-    cum_cf      = net_monthly * prop.hold_years * 12
-    principal   = loan - _remaining_balance(loan, prop.interest_rate, prop.loan_term_years, prop.hold_years)
+    cum_cf = net_monthly * prop.hold_years * 12
+    principal = loan - _remaining_balance(
+        loan, prop.interest_rate, prop.loan_term_years, prop.hold_years
+    )
 
     # Build scenarios: ZHVF first (if available), then fixed rates
     apprecations = []
     if zhvf_12mo is not None:
         apprecations.append(("ZHVF fcst", zhvf_12mo))
     for pct in _APPRECIATION_SCENARIOS:
-        label = f"+{pct:.0%}/yr" if pct > 0 else ("Flat (0%)" if pct == 0 else f"{pct:.1%}/yr")
+        label = (
+            f"+{pct:.0%}/yr"
+            if pct > 0
+            else ("Flat (0%)" if pct == 0 else f"{pct:.1%}/yr")
+        )
         apprecations.append((label, pct))
 
     results = []
     for label, ann_pct in apprecations:
-        exit_price    = price * (1.0 + ann_pct) ** prop.hold_years
+        exit_price = price * (1.0 + ann_pct) ** prop.hold_years
         selling_costs = exit_price * prop.selling_cost_pct
-        rem_balance   = _remaining_balance(loan, prop.interest_rate, prop.loan_term_years, prop.hold_years)
-        net_proceeds  = exit_price - selling_costs - rem_balance
-        total_return  = net_proceeds + cum_cf - down_paid
-        results.append({
-            "label":         label,
-            "ann_pct":       ann_pct,
-            "exit_price":    exit_price,
-            "selling_costs": selling_costs,
-            "rem_balance":   rem_balance,
-            "net_proceeds":  net_proceeds,
-            "total_return":  total_return,
-            "principal":     principal,
-            "cum_cf":        cum_cf,
-            "down_paid":     down_paid,
-        })
+        rem_balance = _remaining_balance(
+            loan, prop.interest_rate, prop.loan_term_years, prop.hold_years
+        )
+        net_proceeds = exit_price - selling_costs - rem_balance
+        total_return = net_proceeds + cum_cf - down_paid
+        results.append(
+            {
+                "label": label,
+                "ann_pct": ann_pct,
+                "exit_price": exit_price,
+                "selling_costs": selling_costs,
+                "rem_balance": rem_balance,
+                "net_proceeds": net_proceeds,
+                "total_return": total_return,
+                "principal": principal,
+                "cum_cf": cum_cf,
+                "down_paid": down_paid,
+            }
+        )
     return results
 
 
 # ── Sensitivity ───────────────────────────────────────────────────────────────
 
-def _rate_sensitivity(price: float, median_rent: float, prop: PropertyInput) -> List[Dict]:
+
+def _rate_sensitivity(
+    price: float, median_rent: float, prop: PropertyInput
+) -> List[Dict]:
     """Vary interest rate; show Phase 2 monthly net cashflow."""
     rates = [0.050, 0.055, 0.060, 0.065, 0.06875, 0.070, 0.075, 0.080, 0.085]
     results = []
     loan = _loan_amount(price, prop)
-    pmi  = _pmi_monthly(price, loan, prop)
+    pmi = _pmi_monthly(price, loan, prop)
     full_rent = median_rent * prop.rent_multiplier
-    fixed    = _fixed_costs(price, prop, homestead=False)
+    fixed = _fixed_costs(price, prop, homestead=False)
     variable = _variable_costs(full_rent, prop.mgmt_fee_phase2, prop)
     base_non_pi = pmi + sum(fixed.values()) + sum(variable.values())
 
     for r in rates:
-        pi  = _monthly_pi(loan, r, prop.loan_term_years)
+        pi = _monthly_pi(loan, r, prop.loan_term_years)
         net = full_rent - (pi + base_non_pi)
-        results.append({
-            "rate":    r,
-            "pi":      pi,
-            "net":     net,
-            "current": abs(r - prop.interest_rate) < 0.0005,
-        })
+        results.append(
+            {
+                "rate": r,
+                "pi": pi,
+                "net": net,
+                "current": abs(r - prop.interest_rate) < 0.0005,
+            }
+        )
     return results
 
 
-def _hack_fraction_sensitivity(price: float, median_rent: float, prop: PropertyInput) -> List[Dict]:
+def _hack_fraction_sensitivity(
+    price: float, median_rent: float, prop: PropertyInput
+) -> List[Dict]:
     """Vary hack fraction; show Phase 1 monthly net and net+BAH."""
     fractions = [0.25, 0.33, 0.50, 0.67, 0.75, 1.00]
     results = []
     loan = _loan_amount(price, prop)
-    pi   = _monthly_pi(loan, prop.interest_rate, prop.loan_term_years)
-    pmi  = _pmi_monthly(price, loan, prop)
+    pi = _monthly_pi(loan, prop.interest_rate, prop.loan_term_years)
+    pmi = _pmi_monthly(price, loan, prop)
     fixed = _fixed_costs(price, prop, homestead=True)  # Phase 1 = homestead
 
     for f in fractions:
         gross_rent = median_rent * prop.rent_multiplier * f
-        variable   = _variable_costs(gross_rent, prop.mgmt_fee_phase1, prop)
-        total_exp  = pi + pmi + sum(fixed.values()) + sum(variable.values())
-        net        = gross_rent - total_exp
-        results.append({
-            "fraction":    f,
-            "income":      gross_rent,
-            "net":         net,
-            "net_with_bah": net + prop.bah_monthly,
-            "current":     abs(f - prop.hack_fraction) < 0.02,
-        })
+        variable = _variable_costs(gross_rent, prop.mgmt_fee_phase1, prop)
+        total_exp = pi + pmi + sum(fixed.values()) + sum(variable.values())
+        net = gross_rent - total_exp
+        results.append(
+            {
+                "fraction": f,
+                "income": gross_rent,
+                "net": net,
+                "net_with_bah": net + prop.bah_monthly,
+                "current": abs(f - prop.hack_fraction) < 0.02,
+            }
+        )
     return results
 
 
+# ── Investment decision helpers ───────────────────────────────────────────────
+
+
+def _crime_tier(crime_per_1k: Optional[float]) -> str:
+    """Return Tier A / B / C / D based on severity-weighted crime per 1,000 residents."""
+    if crime_per_1k is None:
+        return "?"
+    if crime_per_1k < CRIME_TIER_THRESHOLDS["A"]:
+        return "A"
+    if crime_per_1k < CRIME_TIER_THRESHOLDS["B"]:
+        return "B"
+    return "C"  # C/D both map to RED; D label applied at display time if > 150
+
+
+def _rag(
+    value: float, green: float, yellow: float, higher_is_better: bool = True
+) -> str:
+    """Return GREEN / YELLOW / RED given a scalar value and two thresholds."""
+    if higher_is_better:
+        if value >= green:
+            return "GREEN"
+        if value >= yellow:
+            return "YELLOW"
+        return "RED"
+    else:  # lower is better (price premium, crime)
+        if value <= green:
+            return "GREEN"
+        if value <= yellow:
+            return "YELLOW"
+        return "RED"
+
+
+def _stress_test_phase2(price: float, median_rent: float, prop: PropertyInput) -> Dict:
+    """Phase 2 cashflow under stress: rate +1%, rent grown at 2%/yr over hold period."""
+    stressed_prop = dc_replace(
+        prop, interest_rate=prop.interest_rate + STRESS_RATE_DELTA
+    )
+    stressed_rent = median_rent * (1.0 + STRESS_RENT_GROWTH) ** prop.hold_years
+    return _cashflow(price, stressed_rent, stressed_prop, phase=2)
+
+
+def _build_conditions(
+    prop: PropertyInput,
+    cf_p1: Dict,
+    cf_p2: Dict,
+    pnl_scenarios: List[Dict],
+    median_rent: float,
+    home_value: float,
+    rank: Optional[int],
+    total_qualifying: Optional[int],
+    crime_per_1k: Optional[float],
+    cagr_5yr: Optional[float],
+) -> Dict:
+    """
+    Evaluate the 8 investment conditions and return a structured dict.
+    Each condition has: label, value, display, status (GREEN/YELLOW/RED/N/A).
+    Also returns _red_count, _yellow_count, _verdict.
+    """
+    conds = {}
+
+    # ── 1. Phase 2 Survival ────────────────────────────────────────────────────
+    p2_net = cf_p2["net"]
+    conds["phase2_survival"] = {
+        "label": "Phase 2 Survival (post-PCS ≥ -$150/mo)",
+        "value": p2_net,
+        "display": f"{'-' if p2_net < 0 else '+'}${abs(p2_net):,.0f}/mo",
+        "status": _rag(p2_net, PHASE2_SURVIVAL_FLOOR, PHASE2_CAUTION_FLOOR),
+        "threshold": f"≥ ${PHASE2_SURVIVAL_FLOOR:,}/mo",
+    }
+
+    # ── 2. 3-Yr Exit Neutrality (BAH-adjusted, 0% appreciation) ───────────────
+    pnl_flat = next((s for s in pnl_scenarios if s["ann_pct"] == 0.0), None)
+    if pnl_flat is not None:
+        exit_return = (
+            pnl_flat["net_proceeds"]
+            + cf_p1["net_with_bah"] * prop.hold_years * 12
+            - pnl_flat["down_paid"]
+        )
+        exit_status = _rag(exit_return, 0, EXIT_NEUTRAL_YELLOW)
+        exit_display = f"{'+' if exit_return >= 0 else '-'}${abs(exit_return):,.0f}"
+    else:
+        exit_return = None
+        exit_status = "?"
+        exit_display = "N/A"
+    conds["exit_neutrality"] = {
+        "label": f"3-Yr Exit Neutrality (0% appr, BAH-adj ≥ $0)",
+        "value": exit_return,
+        "display": exit_display,
+        "status": exit_status,
+        "threshold": "≥ $0 net return",
+    }
+
+    # ── 3. Interest Rate Stress Test (+1%, rent +2%/yr) ───────────────────────
+    stress_cf = _stress_test_phase2(prop.asking_price, median_rent, prop)
+    stress_net = stress_cf["net"]
+    stressed_rent_used = median_rent * (1.0 + STRESS_RENT_GROWTH) ** prop.hold_years
+    conds["stress_test"] = {
+        "label": f"Rate Stress (+{STRESS_RATE_DELTA:.0%}, rent +{STRESS_RENT_GROWTH:.0%}/yr)",
+        "value": stress_net,
+        "display": f"{'-' if stress_net < 0 else '+'}${abs(stress_net):,.0f}/mo",
+        "status": _rag(stress_net, PHASE2_SURVIVAL_FLOOR, PHASE2_CAUTION_FLOOR),
+        "threshold": f"Phase 2 ≥ ${PHASE2_SURVIVAL_FLOOR:,}/mo under stress",
+        "stressed_rate": prop.interest_rate + STRESS_RATE_DELTA,
+        "stressed_rent": stressed_rent_used,
+    }
+
+    # ── 4. Price vs ZIP Median ─────────────────────────────────────────────────
+    if home_value > 0:
+        premium = (prop.asking_price - home_value) / home_value
+        price_status = _rag(
+            premium, PRICE_PREMIUM_GREEN, PRICE_PREMIUM_YELLOW, higher_is_better=False
+        )
+        price_display = f"{'+' if premium >= 0 else ''}{premium:.1%} vs median"
+    else:
+        premium = None
+        price_status = "?"
+        price_display = "N/A"
+    conds["price_vs_median"] = {
+        "label": f"Price vs ZIP Median (≤ +{PRICE_PREMIUM_YELLOW:.0%})",
+        "value": premium,
+        "display": price_display,
+        "status": price_status,
+        "threshold": f"≤ +{PRICE_PREMIUM_YELLOW:.0%} above median",
+    }
+
+    # ── 5. Phase 1 Cash-on-Cash Yield ─────────────────────────────────────────
+    # For VA 0%-down: skip — no meaningful cash investment, covered by conditions 1–3.
+    # For conventional with down payment: coc = net_with_bah × 12 / down_payment.
+    is_va_zero_down = prop.loan_type.upper() == "VA" and prop.down_pct == 0.0
+    down_amt = prop.asking_price * prop.down_pct
+    if is_va_zero_down:
+        coc = None
+        coc_status = "N/A"
+        coc_display = "N/A (VA 0% down)"
+    elif down_amt > 0:
+        coc = cf_p1["net_with_bah"] * 12.0 / down_amt
+        coc_status = _rag(coc, COC_GREEN, COC_YELLOW)
+        coc_display = f"{coc:.1%} on ${down_amt:,.0f} down"
+    else:
+        coc = None
+        coc_status = "N/A"
+        coc_display = "N/A"
+    conds["coc_phase1"] = {
+        "label": f"Phase 1 CoC Yield (≥ {COC_GREEN:.0%} on cash invested)",
+        "value": coc,
+        "display": coc_display,
+        "status": coc_status,
+        "threshold": f"≥ {COC_GREEN:.0%}",
+    }
+
+    # ── 6. ZIP Score — Top Quartile ────────────────────────────────────────────
+    if rank is not None and total_qualifying is not None and total_qualifying > 0:
+        quartile_cutoff = max(1, total_qualifying // 4)
+        half_cutoff = max(1, total_qualifying // 2)
+        if rank <= quartile_cutoff:
+            rank_status = "GREEN"
+        elif rank <= half_cutoff:
+            rank_status = "YELLOW"
+        else:
+            rank_status = "RED"
+        rank_display = f"#{rank} of {total_qualifying}"
+    else:
+        rank_status = "RED"  # not in ranked output = failed filters
+        rank_display = "Not in ranked output"
+    conds["zip_rank"] = {
+        "label": "ZIP Score — Top Quartile",
+        "value": rank,
+        "display": rank_display,
+        "status": rank_status,
+        "threshold": f"Top 25% of qualifying ZIPs",
+    }
+
+    # ── 7. Crime Tier ──────────────────────────────────────────────────────────
+    tier = _crime_tier(crime_per_1k)
+    crime_status = (
+        "GREEN"
+        if tier == "A"
+        else "YELLOW" if tier == "B" else "RED" if tier in ("C", "D") else "?"
+    )
+    crime_display = (
+        f"Tier {tier} ({crime_per_1k:.0f}/1k)" if crime_per_1k is not None else "N/A"
+    )
+    conds["crime_tier"] = {
+        "label": "Crime Tier (A or B — < 100/1k)",
+        "value": crime_per_1k,
+        "tier": tier,
+        "display": crime_display,
+        "status": crime_status,
+        "threshold": "< 100/1k (Tier A/B)",
+    }
+
+    # ── 8. 5-Yr CAGR ──────────────────────────────────────────────────────────
+    if cagr_5yr is not None:
+        cagr_status = _rag(cagr_5yr, CAGR_5YR_GREEN, CAGR_5YR_YELLOW)
+        cagr_display = f"{cagr_5yr:+.1%}/yr"
+    else:
+        cagr_status = "?"
+        cagr_display = "N/A"
+    conds["cagr_5yr"] = {
+        "label": f"5-Yr CAGR (≥ {CAGR_5YR_GREEN:.0%}/yr)",
+        "value": cagr_5yr,
+        "display": cagr_display,
+        "status": cagr_status,
+        "threshold": f"≥ {CAGR_5YR_GREEN:.0%}/yr",
+    }
+
+    # ── Verdict ────────────────────────────────────────────────────────────────
+    counted = [c for c in conds.values() if c["status"] not in ("N/A", "?")]
+    reds = sum(1 for c in counted if c["status"] == "RED")
+    yellows = sum(1 for c in counted if c["status"] == "YELLOW")
+    greens = sum(1 for c in counted if c["status"] == "GREEN")
+
+    if reds > 0 or yellows >= 3:
+        verdict = "SKIP"
+    elif yellows >= 1:
+        verdict = "CAUTION"
+    else:
+        verdict = "BUY"
+
+    conds["_red_count"] = reds
+    conds["_yellow_count"] = yellows
+    conds["_green_count"] = greens
+    conds["_verdict"] = verdict
+
+    return conds
+
+
 # ── Crime data ────────────────────────────────────────────────────────────────
+
 
 def _build_crime_cache() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     """
@@ -383,7 +694,8 @@ def _build_crime_cache() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]
     print(f"  Building crime breakdown cache (one-time, ~30-60s)...")
     needed_cols = ["Postal_Code", "Problem", "Response_Date", "Weekday"]
     df = pd.read_csv(
-        _CRIME_RAW_PATH, low_memory=False,
+        _CRIME_RAW_PATH,
+        low_memory=False,
         usecols=lambda c: c in needed_cols,
     )
 
@@ -403,20 +715,26 @@ def _build_crime_cache() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]
 
     latest = df["date"].max()
     cutoff_recent = latest - pd.DateOffset(months=12)
-    cutoff_prior  = latest - pd.DateOffset(months=24)
+    cutoff_prior = latest - pd.DateOffset(months=24)
 
     recent = df[df["date"] >= cutoff_recent].copy()
-    prior  = df[(df["date"] >= cutoff_prior) & (df["date"] < cutoff_recent)].copy()
+    prior = df[(df["date"] >= cutoff_prior) & (df["date"] < cutoff_recent)].copy()
 
     # Crime type breakdown: categorize problems
     for frame in (recent, prior):
         frame["category"] = frame["_prob"].apply(_categorize)
 
-    type_recent = recent.groupby(["zip", "category"]).size().reset_index(name="count_recent")
-    type_prior  = prior.groupby(["zip",  "category"]).size().reset_index(name="count_prior")
-    type_df = type_recent.merge(type_prior, on=["zip", "category"], how="outer").fillna(0)
+    type_recent = (
+        recent.groupby(["zip", "category"]).size().reset_index(name="count_recent")
+    )
+    type_prior = (
+        prior.groupby(["zip", "category"]).size().reset_index(name="count_prior")
+    )
+    type_df = type_recent.merge(type_prior, on=["zip", "category"], how="outer").fillna(
+        0
+    )
     type_df["count_recent"] = type_df["count_recent"].astype(int)
-    type_df["count_prior"]  = type_df["count_prior"].astype(int)
+    type_df["count_prior"] = type_df["count_prior"].astype(int)
 
     # Weekday breakdown (recent only)
     weekday_df = recent.groupby(["zip", "Weekday"]).size().reset_index(name="count")
@@ -424,7 +742,9 @@ def _build_crime_cache() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]
     DATA_PROC.mkdir(parents=True, exist_ok=True)
     type_df.to_csv(_CRIME_TYPE_CACHE, index=False)
     weekday_df.to_csv(_CRIME_WEEKDAY_CACHE, index=False)
-    print(f"  Crime cache saved → {_CRIME_TYPE_CACHE.name}, {_CRIME_WEEKDAY_CACHE.name}")
+    print(
+        f"  Crime cache saved → {_CRIME_TYPE_CACHE.name}, {_CRIME_WEEKDAY_CACHE.name}"
+    )
     return type_df, weekday_df
 
 
@@ -436,7 +756,7 @@ def _load_crime_breakdown(zip_code: str) -> Optional[Dict]:
     """
     # Try to load from cache first
     if _CRIME_TYPE_CACHE.exists() and _CRIME_WEEKDAY_CACHE.exists():
-        type_df    = pd.read_csv(_CRIME_TYPE_CACHE,    dtype={"zip": str})
+        type_df = pd.read_csv(_CRIME_TYPE_CACHE, dtype={"zip": str})
         weekday_df = pd.read_csv(_CRIME_WEEKDAY_CACHE, dtype={"zip": str})
     else:
         type_df, weekday_df = _build_crime_cache()
@@ -445,28 +765,38 @@ def _load_crime_breakdown(zip_code: str) -> Optional[Dict]:
 
     # Filter to this ZIP
     t = type_df[type_df["zip"] == zip_code].copy()
-    w = weekday_df[weekday_df["zip"] == zip_code].copy() if weekday_df is not None else pd.DataFrame()
+    w = (
+        weekday_df[weekday_df["zip"] == zip_code].copy()
+        if weekday_df is not None
+        else pd.DataFrame()
+    )
 
     if t.empty:
         return None
 
     total_recent = int(t["count_recent"].sum())
-    total_prior  = int(t["count_prior"].sum())
-    trend_pct    = ((total_recent - total_prior) / total_prior * 100.0) if total_prior > 0 else None
+    total_prior = int(t["count_prior"].sum())
+    trend_pct = (
+        ((total_recent - total_prior) / total_prior * 100.0)
+        if total_prior > 0
+        else None
+    )
 
     # Sort categories by recent count
     t = t.sort_values("count_recent", ascending=False)
     categories = []
     for _, row in t.iterrows():
-        cnt   = int(row["count_recent"])
+        cnt = int(row["count_recent"])
         prior = int(row["count_prior"])
-        pct   = cnt / total_recent * 100.0 if total_recent > 0 else 0.0
-        categories.append({
-            "name":  row["category"],
-            "count": cnt,
-            "pct":   pct,
-            "prior": prior,
-        })
+        pct = cnt / total_recent * 100.0 if total_recent > 0 else 0.0
+        categories.append(
+            {
+                "name": row["category"],
+                "count": cnt,
+                "pct": pct,
+                "prior": prior,
+            }
+        )
 
     peak_day = None
     if not w.empty:
@@ -474,20 +804,23 @@ def _load_crime_breakdown(zip_code: str) -> Optional[Dict]:
 
     return {
         "total_recent": total_recent,
-        "total_prior":  total_prior,
-        "trend_pct":    trend_pct,
-        "categories":   categories,
-        "peak_day":     peak_day,
+        "total_prior": total_prior,
+        "trend_pct": trend_pct,
+        "categories": categories,
+        "peak_day": peak_day,
     }
 
 
 # ── Pipeline data loading ─────────────────────────────────────────────────────
 
-def _load_pipeline_data() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+
+def _load_pipeline_data() -> (
+    Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame]]
+):
     """Load ranked scores, merged (pre-filter) data, and ZHVF forecast."""
     ranked = None
     merged = None
-    zhvf   = None
+    zhvf = None
 
     if _RANKED_PATH.exists():
         ranked = pd.read_csv(_RANKED_PATH, dtype={"zip": str})
@@ -502,8 +835,12 @@ def _load_pipeline_data() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame
             zhvf = pd.read_csv(_ZHVF_PATH)
             # Normalize ZIP column
             zip_col = next(
-                (c for c in zhvf.columns if c.lower() in ("regionname", "zip", "zipcode")),
-                None
+                (
+                    c
+                    for c in zhvf.columns
+                    if c.lower() in ("regionname", "zip", "zipcode")
+                ),
+                None,
             )
             if zip_col:
                 zhvf["zip"] = zhvf[zip_col].astype(str).str.strip().str.zfill(5)
@@ -514,7 +851,9 @@ def _load_pipeline_data() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame
     return ranked, merged, zhvf
 
 
-def _get_zip_row(zip_code: str, ranked: Optional[pd.DataFrame], merged: Optional[pd.DataFrame]) -> Tuple[Optional[pd.Series], bool]:
+def _get_zip_row(
+    zip_code: str, ranked: Optional[pd.DataFrame], merged: Optional[pd.DataFrame]
+) -> Tuple[Optional[pd.Series], bool]:
     """
     Return (row, in_ranked).
     Prefers ranked (has score/rank), falls back to merged (pre-filter data).
@@ -539,7 +878,11 @@ def _get_zhvf_forecast(zip_code: str, zhvf: Optional[pd.DataFrame]) -> Optional[
     )
     if forecast_col is None:
         # Fall back: use the last non-zip numeric column
-        num_cols = [c for c in zhvf.columns if c != "zip" and pd.api.types.is_numeric_dtype(zhvf[c])]
+        num_cols = [
+            c
+            for c in zhvf.columns
+            if c != "zip" and pd.api.types.is_numeric_dtype(zhvf[c])
+        ]
         forecast_col = num_cols[-1] if num_cols else None
     if forecast_col is None:
         return None
@@ -554,13 +897,14 @@ def _compute_commute_fallback(zip_code: str) -> Optional[Tuple[float, float]]:
     """Haversine fallback for commute when ZIP isn't in pipeline data."""
     from commute import haversine_miles
     from utils import load_zip_centroids
+
     try:
         centroids = load_zip_centroids()
         row = centroids[centroids["zip"] == zip_code]
         if row.empty:
             return None
         lat, lon = float(row.iloc[0]["zip_lat"]), float(row.iloc[0]["zip_lon"])
-        miles   = haversine_miles(lat, lon, DUTY_STATION["lat"], DUTY_STATION["lon"])
+        miles = haversine_miles(lat, lon, DUTY_STATION["lat"], DUTY_STATION["lon"])
         minutes = (miles * 1.4 / 35.0) * 60.0
         return round(minutes, 1), round(miles, 1)
     except Exception:
@@ -569,55 +913,87 @@ def _compute_commute_fallback(zip_code: str) -> Optional[Tuple[float, float]]:
 
 # ── Hard filter evaluation ────────────────────────────────────────────────────
 
+
 def _evaluate_filters(row: pd.Series, asking_price: float, annual_rent: float) -> Dict:
     """Check each hard filter against the asking price (and against the yield-target price).
-    annual_rent = ZORI_per_unit × units × 12 (caller is responsible for units scaling)."""
+    annual_rent = ZORI_per_unit × units × 12 (caller is responsible for units scaling).
+    """
     yield_at_ask = annual_rent / asking_price if asking_price > 0 else 0.0
-    yield_target_price = _max_price_for_yield(THRESHOLDS["min_rent_to_price"], annual_rent)
+    yield_target_price = _max_price_for_yield(
+        THRESHOLDS["min_rent_to_price"], annual_rent
+    )
 
     crime_cutoff = None
-    crime_value  = float(row["crime_per_1k"]) if "crime_per_1k" in row.index else None
+    crime_value = float(row["crime_per_1k"]) if "crime_per_1k" in row.index else None
 
     results = {
         "price_ceiling": {
-            "label":     f"Price ≤ ${THRESHOLDS['max_home_value']:,}",
-            "pass":      asking_price <= THRESHOLDS["max_home_value"],
-            "value":     f"${asking_price:,.0f}",
+            "label": f"Price ≤ ${THRESHOLDS['max_home_value']:,}",
+            "pass": asking_price <= THRESHOLDS["max_home_value"],
+            "value": f"${asking_price:,.0f}",
             "threshold": f"≤ ${THRESHOLDS['max_home_value']:,}",
         },
         "yield_floor": {
-            "label":     f"Yield ≥ {THRESHOLDS['min_rent_to_price']:.1%}",
-            "pass":      yield_at_ask >= THRESHOLDS["min_rent_to_price"],
-            "value":     f"{yield_at_ask:.2%}",
+            "label": f"Yield ≥ {THRESHOLDS['min_rent_to_price']:.1%}",
+            "pass": yield_at_ask >= THRESHOLDS["min_rent_to_price"],
+            "value": f"{yield_at_ask:.2%}",
             "threshold": f"≥ {THRESHOLDS['min_rent_to_price']:.1%}",
             "fix_price": yield_target_price,
         },
         "owner_occ_min": {
-            "label":     f"Owner-occ ≥ {THRESHOLDS['min_owner_occ_pct']:.0%}",
-            "pass":      float(row.get("owner_occ_pct", 1)) >= THRESHOLDS["min_owner_occ_pct"]
-                         if "owner_occ_pct" in row.index else None,
-            "value":     f"{row.get('owner_occ_pct', 'N/A'):.0%}" if "owner_occ_pct" in row.index else "N/A",
+            "label": f"Owner-occ ≥ {THRESHOLDS['min_owner_occ_pct']:.0%}",
+            "pass": (
+                float(row.get("owner_occ_pct", 1)) >= THRESHOLDS["min_owner_occ_pct"]
+                if "owner_occ_pct" in row.index
+                else None
+            ),
+            "value": (
+                f"{row.get('owner_occ_pct', 'N/A'):.0%}"
+                if "owner_occ_pct" in row.index
+                else "N/A"
+            ),
             "threshold": f"≥ {THRESHOLDS['min_owner_occ_pct']:.0%}",
         },
         "owner_occ_max": {
-            "label":     f"Owner-occ ≤ {THRESHOLDS['max_owner_occ_pct']:.0%}",
-            "pass":      float(row.get("owner_occ_pct", 0)) <= THRESHOLDS["max_owner_occ_pct"]
-                         if "owner_occ_pct" in row.index else None,
-            "value":     f"{row.get('owner_occ_pct', 'N/A'):.0%}" if "owner_occ_pct" in row.index else "N/A",
+            "label": f"Owner-occ ≤ {THRESHOLDS['max_owner_occ_pct']:.0%}",
+            "pass": (
+                float(row.get("owner_occ_pct", 0)) <= THRESHOLDS["max_owner_occ_pct"]
+                if "owner_occ_pct" in row.index
+                else None
+            ),
+            "value": (
+                f"{row.get('owner_occ_pct', 'N/A'):.0%}"
+                if "owner_occ_pct" in row.index
+                else "N/A"
+            ),
             "threshold": f"≤ {THRESHOLDS['max_owner_occ_pct']:.0%}",
         },
         "commute": {
-            "label":     f"Commute ≤ {MAX_COMMUTE_MINS} min",
-            "pass":      float(row.get("commute_minutes", 0)) <= MAX_COMMUTE_MINS
-                         if "commute_minutes" in row.index else None,
-            "value":     f"{row.get('commute_minutes', 'N/A'):.0f} min" if "commute_minutes" in row.index else "N/A",
+            "label": f"Commute ≤ {MAX_COMMUTE_MINS} min",
+            "pass": (
+                float(row.get("commute_minutes", 0)) <= MAX_COMMUTE_MINS
+                if "commute_minutes" in row.index
+                else None
+            ),
+            "value": (
+                f"{row.get('commute_minutes', 'N/A'):.0f} min"
+                if "commute_minutes" in row.index
+                else "N/A"
+            ),
             "threshold": f"≤ {MAX_COMMUTE_MINS} min",
         },
         "income": {
-            "label":     f"Income ≥ ${THRESHOLDS['min_median_income']:,}",
-            "pass":      float(row.get("median_hh_income", 0)) >= THRESHOLDS["min_median_income"]
-                         if "median_hh_income" in row.index else None,
-            "value":     f"${row.get('median_hh_income', 'N/A'):,.0f}" if "median_hh_income" in row.index else "N/A",
+            "label": f"Income ≥ ${THRESHOLDS['min_median_income']:,}",
+            "pass": (
+                float(row.get("median_hh_income", 0)) >= THRESHOLDS["min_median_income"]
+                if "median_hh_income" in row.index
+                else None
+            ),
+            "value": (
+                f"${row.get('median_hh_income', 'N/A'):,.0f}"
+                if "median_hh_income" in row.index
+                else "N/A"
+            ),
             "threshold": f"≥ ${THRESHOLDS['min_median_income']:,}",
         },
     }
@@ -625,9 +1001,9 @@ def _evaluate_filters(row: pd.Series, asking_price: float, annual_rent: float) -
     # Crime filter — percentile-based, so we need the full merged dataset to compute cutoff
     if crime_value is not None:
         results["crime"] = {
-            "label":     f"Crime ≤ {CRIME_PERCENTILE_CUTOFF:.0%} percentile",
-            "pass":      None,   # filled in analyze_property once we have the full dataset
-            "value":     f"{crime_value:.1f}/1k",
+            "label": f"Crime ≤ {CRIME_PERCENTILE_CUTOFF:.0%} percentile",
+            "pass": None,  # filled in analyze_property once we have the full dataset
+            "value": f"{crime_value:.1f}/1k",
             "threshold": f"top {1-CRIME_PERCENTILE_CUTOFF:.0%} safest",
         }
 
@@ -635,6 +1011,7 @@ def _evaluate_filters(row: pd.Series, asking_price: float, annual_rent: float) -
 
 
 # ── Main analysis entry point ─────────────────────────────────────────────────
+
 
 def analyze_property(prop: PropertyInput) -> Dict[str, Any]:
     """
@@ -666,24 +1043,30 @@ def analyze_property(prop: PropertyInput) -> Dict[str, Any]:
         )
 
     # Use rent_override if provided, else ZORI median (per-unit)
-    median_rent = prop.rent_override if prop.rent_override else float(row.get("median_rent", 0))
+    median_rent = (
+        prop.rent_override if prop.rent_override else float(row.get("median_rent", 0))
+    )
     if median_rent <= 0:
-        raise ValueError(f"No rent data for ZIP {prop.zip_code}. Use --rent-override to specify expected rent.")
+        raise ValueError(
+            f"No rent data for ZIP {prop.zip_code}. Use --rent-override to specify expected rent."
+        )
 
-    annual_rent  = median_rent * prop.rent_multiplier * 12.0
-    gross_yield  = annual_rent / prop.asking_price
+    annual_rent = median_rent * prop.rent_multiplier * 12.0
+    gross_yield = annual_rent / prop.asking_price
 
     # Market context
-    home_value   = float(row.get("median_home_value", prop.asking_price))
-    price_delta  = prop.asking_price - home_value
+    home_value = float(row.get("median_home_value", prop.asking_price))
+    price_delta = prop.asking_price - home_value
     price_delta_pct = price_delta / home_value * 100.0 if home_value > 0 else 0.0
 
     # ZHVF forecast
     zhvf_12mo = _get_zhvf_forecast(prop.zip_code, zhvf_df)
 
     # Compute commute if missing from data
-    commute_min  = float(row["commute_minutes"]) if "commute_minutes" in row.index else None
-    commute_mi   = float(row["commute_miles"])   if "commute_miles"   in row.index else None
+    commute_min = (
+        float(row["commute_minutes"]) if "commute_minutes" in row.index else None
+    )
+    commute_mi = float(row["commute_miles"]) if "commute_miles" in row.index else None
     if commute_min is None:
         fallback = _compute_commute_fallback(prop.zip_code)
         if fallback:
@@ -705,18 +1088,20 @@ def analyze_property(prop: PropertyInput) -> Dict[str, Any]:
     for y in [0.065, 0.070, 0.075, 0.080]:
         mp = _max_price_for_yield(y, annual_rent)
         yield_targets[y] = {
-            "max_price":  mp,
-            "gap":        prop.asking_price - mp,
-            "gap_pct":    (prop.asking_price - mp) / prop.asking_price * 100.0,
+            "max_price": mp,
+            "gap": prop.asking_price - mp,
+            "gap_pct": (prop.asking_price - mp) / prop.asking_price * 100.0,
         }
     breakeven_price = _breakeven_price_phase1(median_rent, prop)
 
     # 3-year P&L scenarios
-    pnl_scenarios = _three_year_pnl(prop.asking_price, median_rent, prop, zhvf_12mo=zhvf_12mo)
+    pnl_scenarios = _three_year_pnl(
+        prop.asking_price, median_rent, prop, zhvf_12mo=zhvf_12mo
+    )
 
     # Sensitivity
-    rate_sens  = _rate_sensitivity(prop.asking_price, median_rent, prop)
-    hack_sens  = _hack_fraction_sensitivity(prop.asking_price, median_rent, prop)
+    rate_sens = _rate_sensitivity(prop.asking_price, median_rent, prop)
+    hack_sens = _hack_fraction_sensitivity(prop.asking_price, median_rent, prop)
 
     # Filter status
     filters = _evaluate_filters(row, prop.asking_price, annual_rent)
@@ -727,7 +1112,7 @@ def analyze_property(prop: PropertyInput) -> Dict[str, Any]:
 
     # City-wide stats for context
     city_avg_crime = None
-    city_avg_rent  = None
+    city_avg_rent = None
     city_avg_value = None
     src_df = merged if merged is not None else ranked
     if src_df is not None:
@@ -752,72 +1137,124 @@ def analyze_property(prop: PropertyInput) -> Dict[str, Any]:
     crime_breakdown = _load_crime_breakdown(prop.zip_code)
 
     # Rank info
-    rank      = int(row["rank"])        if in_ranked and "rank"        in row.index else None
-    score     = float(row["final_score"]) if in_ranked and "final_score" in row.index else None
+    rank = int(row["rank"]) if in_ranked and "rank" in row.index else None
+    score = (
+        float(row["final_score"]) if in_ranked and "final_score" in row.index else None
+    )
     total_qualifying = len(ranked) if ranked is not None and in_ranked else None
 
     # Scorecard checks
-    filters_pass_asking = all(v["pass"] for v in filters.values() if v["pass"] is not None)
+    filters_pass_asking = all(
+        v["pass"] for v in filters.values() if v["pass"] is not None
+    )
     yield_fix_price = yield_targets[0.065]["max_price"]
     # "negotiated price" check: non-price filters all pass AND negotiated price ≤ ceiling
     non_price_ok = all(
-        v["pass"] for k, v in filters.items()
+        v["pass"]
+        for k, v in filters.items()
         if k not in ("price_ceiling", "yield_floor") and v["pass"] is not None
     )
-    filters_pass_negot = non_price_ok and (yield_fix_price <= THRESHOLDS["max_home_value"])
+    filters_pass_negot = non_price_ok and (
+        yield_fix_price <= THRESHOLDS["max_home_value"]
+    )
 
     sc = {
-        "filters_at_asking":    filters_pass_asking,
-        "filters_at_negot":     yield_fix_price,
+        "filters_at_asking": filters_pass_asking,
+        "filters_at_negot": yield_fix_price,
         "filters_at_negot_pass": filters_pass_negot,
-        "phase1_neutral":     cf_p1["net"] >= 0,
-        "phase1_with_bah":    cf_p1["net_with_bah"] >= 0,
-        "phase2_positive":    cf_p2["net"] >= 0,
-        "return_flat_pos":    next((s["total_return"] >= 0 for s in pnl_scenarios if s["ann_pct"] == 0.0), False),
-        "return_5pct_pos":    next((s["total_return"] >= 0 for s in pnl_scenarios if abs(s["ann_pct"] - 0.05) < 0.001), False),
-        "crime_improving":    (crime_breakdown["trend_pct"] is not None and
-                               crime_breakdown["trend_pct"] < 0) if crime_breakdown else None,
-        "top_ranked":         rank is not None and rank <= max(5, (total_qualifying or 0) // 3),
+        "phase1_neutral": cf_p1["net"] >= 0,
+        "phase1_with_bah": cf_p1["net_with_bah"] >= 0,
+        # True when BAH is the *only* reason Phase 1 doesn't bleed cash.
+        # Important risk flag: any BAH disruption (deployment, rate change) = immediate loss.
+        "phase1_bah_dependent": (
+            prop.bah_monthly > 0 and cf_p1["net"] < 0 and cf_p1["net_with_bah"] >= 0
+        ),
+        "phase2_positive": cf_p2["net"] >= 0,
+        "return_flat_pos": next(
+            (s["total_return"] >= 0 for s in pnl_scenarios if s["ann_pct"] == 0.0),
+            False,
+        ),
+        "return_5pct_pos": next(
+            (
+                s["total_return"] >= 0
+                for s in pnl_scenarios
+                if abs(s["ann_pct"] - 0.05) < 0.001
+            ),
+            False,
+        ),
+        "crime_improving": (
+            (
+                crime_breakdown["trend_pct"] is not None
+                and crime_breakdown["trend_pct"] < 0
+            )
+            if crime_breakdown
+            else None
+        ),
+        "top_ranked": rank is not None and rank <= max(5, (total_qualifying or 0) // 3),
     }
 
+    # ── Investment Decision Conditions ────────────────────────────────────────
+    crime_val_for_cond = (
+        float(row.get("crime_per_1k", 0)) if "crime_per_1k" in row.index else None
+    )
+    cagr_5yr_for_cond = (
+        float(row.get("zhvi_cagr_5yr", 0)) if "zhvi_cagr_5yr" in row.index else None
+    )
+    conditions = _build_conditions(
+        prop=prop,
+        cf_p1=cf_p1,
+        cf_p2=cf_p2,
+        pnl_scenarios=pnl_scenarios,
+        median_rent=median_rent,
+        home_value=home_value,
+        rank=rank,
+        total_qualifying=total_qualifying,
+        crime_per_1k=crime_val_for_cond,
+        cagr_5yr=cagr_5yr_for_cond,
+    )
+
     return {
-        "prop":              prop,
-        "row":               row,
-        "in_ranked":         in_ranked,
-        "median_rent":       median_rent,
-        "annual_rent":       annual_rent,
-        "gross_yield":       gross_yield,
-        "home_value":        home_value,
-        "price_delta":       price_delta,
-        "price_delta_pct":   price_delta_pct,
-        "commute_min":       commute_min,
-        "commute_mi":        commute_mi,
-        "zhvf_12mo":         zhvf_12mo,
-        "cf_p1":             cf_p1,
-        "cf_p2":             cf_p2,
-        "yield_targets":     yield_targets,
-        "breakeven_price":   breakeven_price,
-        "pnl_scenarios":     pnl_scenarios,
-        "rate_sensitivity":  rate_sens,
-        "hack_sensitivity":  hack_sens,
-        "filters":           filters,
-        "crime_breakdown":   crime_breakdown,
-        "crime_cutoff":      crime_cutoff,
-        "city_avg_crime":    city_avg_crime,
-        "city_avg_rent":     city_avg_rent,
-        "city_avg_value":    city_avg_value,
-        "rank":              rank,
-        "score":             score,
-        "total_qualifying":  total_qualifying,
-        "scorecard":         sc,
-        "pct_price":         _pct_rank("median_home_value", prop.asking_price),
-        "pct_yield":         _pct_rank("rent_to_price", gross_yield),
-        "pct_crime":         _pct_rank("crime_per_1k", row.get("crime_per_1k"), ascending=False),
-        "pct_commute":       _pct_rank("commute_minutes", commute_min, ascending=False),
+        "prop": prop,
+        "row": row,
+        "in_ranked": in_ranked,
+        "median_rent": median_rent,
+        "annual_rent": annual_rent,
+        "gross_yield": gross_yield,
+        "home_value": home_value,
+        "price_delta": price_delta,
+        "price_delta_pct": price_delta_pct,
+        "commute_min": commute_min,
+        "commute_mi": commute_mi,
+        "zhvf_12mo": zhvf_12mo,
+        "cf_p1": cf_p1,
+        "cf_p2": cf_p2,
+        "yield_targets": yield_targets,
+        "breakeven_price": breakeven_price,
+        "pnl_scenarios": pnl_scenarios,
+        "rate_sensitivity": rate_sens,
+        "hack_sensitivity": hack_sens,
+        "filters": filters,
+        "crime_breakdown": crime_breakdown,
+        "crime_cutoff": crime_cutoff,
+        "city_avg_crime": city_avg_crime,
+        "city_avg_rent": city_avg_rent,
+        "city_avg_value": city_avg_value,
+        "rank": rank,
+        "score": score,
+        "total_qualifying": total_qualifying,
+        "scorecard": sc,
+        "conditions": conditions,
+        "pct_price": _pct_rank("median_home_value", prop.asking_price),
+        "pct_yield": _pct_rank("rent_to_price", gross_yield),
+        "pct_crime": _pct_rank(
+            "crime_per_1k", row.get("crime_per_1k"), ascending=False
+        ),
+        "pct_commute": _pct_rank("commute_minutes", commute_min, ascending=False),
     }
 
 
 # ── Report formatting ─────────────────────────────────────────────────────────
+
 
 def _bar(pct: float, width: int = 22) -> str:
     filled = max(0, min(width, round(pct / 100.0 * width)))
@@ -825,8 +1262,10 @@ def _bar(pct: float, width: int = 22) -> str:
 
 
 def _check(v: Optional[bool]) -> str:
-    if v is True:   return "✓"
-    if v is False:  return "✗"
+    if v is True:
+        return "✓"
+    if v is False:
+        return "✗"
     return "?"
 
 
@@ -840,13 +1279,13 @@ def _fmt_money(v: float) -> str:
 
 def format_report(r: Dict[str, Any]) -> str:
     prop = r["prop"]
-    row  = r["row"]
-    cf1  = r["cf_p1"]
-    cf2  = r["cf_p2"]
-    W    = 68
+    row = r["row"]
+    cf1 = r["cf_p1"]
+    cf2 = r["cf_p2"]
+    W = 68
 
     lines = []
-    sep  = "═" * W
+    sep = "═" * W
     thin = "─" * W
 
     def section(title: str):
@@ -854,37 +1293,67 @@ def format_report(r: Dict[str, Any]) -> str:
 
     lines.append(sep)
     lines.append("  PROPERTY ANALYSIS REPORT")
-    unit_label = {1: "SFH/Condo", 2: "Duplex", 3: "Triplex", 4: "Fourplex"}.get(prop.units, f"{prop.units}-unit")
-    lines.append(f"  ZIP {prop.zip_code}  |  ${prop.asking_price:,.0f} asking  |  {unit_label}  |  {prop.loan_type} {prop.interest_rate:.3%} {prop.loan_term_years}yr")
+    unit_label = {1: "SFH/Condo", 2: "Duplex", 3: "Triplex", 4: "Fourplex"}.get(
+        prop.units, f"{prop.units}-unit"
+    )
+    lines.append(
+        f"  ZIP {prop.zip_code}  |  ${prop.asking_price:,.0f} asking  |  {unit_label}  |  {prop.loan_type} {prop.interest_rate:.3%} {prop.loan_term_years}yr"
+    )
     lines.append(sep)
 
     # ── 1. ZIP OVERVIEW ───────────────────────────────────────────────────────
     section("1. ZIP MARKET OVERVIEW")
     if r["rank"]:
-        lines.append(f"  Rank: #{r['rank']} of {r['total_qualifying']} qualifying ZIPs  |  Score: {r['score']:.3f}")
+        lines.append(
+            f"  Rank: #{r['rank']} of {r['total_qualifying']} qualifying ZIPs  |  Score: {r['score']:.3f}"
+        )
     else:
         lines.append(f"  This ZIP did NOT pass all hard filters (not in ranked output)")
 
     delta_sign = "+" if r["price_delta"] >= 0 else ""
-    lines.append(f"  Median home value:  ${r['home_value']:>10,.0f}   Asking: ${prop.asking_price:,.0f} ({delta_sign}{r['price_delta_pct']:.1f}% vs median)")
-    lines.append(f"  Median rent (ZORI): ${r['median_rent']:>10,.0f}/mo  Gross yield: {r['gross_yield']:.2%}  {'⚠ below 6.5% floor' if r['gross_yield'] < THRESHOLDS['min_rent_to_price'] else '✓ above floor'}")
+    lines.append(
+        f"  Median home value:  ${r['home_value']:>10,.0f}   Asking: ${prop.asking_price:,.0f} ({delta_sign}{r['price_delta_pct']:.1f}% vs median)"
+    )
+    yield_note = (
+        "⚠ below 6.5% floor"
+        if r["gross_yield"] < THRESHOLDS["min_rent_to_price"]
+        else "✓ above floor"
+    )
+    room_hack_note = (
+        "  ⚠ room-hack execution yield — not ZORI-comparable"
+        if prop.rooms_rented is not None
+        else ""
+    )
+    lines.append(
+        f"  Median rent (ZORI): ${r['median_rent']:>10,.0f}/mo  Gross yield: {r['gross_yield']:.2%}  {yield_note}{room_hack_note}"
+    )
 
     if r["commute_min"] is not None:
-        lines.append(f"  Commute to BAMC:   {r['commute_min']:>10.0f} min  ({r['commute_mi']:.1f} mi)")
+        lines.append(
+            f"  Commute to BAMC:   {r['commute_min']:>10.0f} min  ({r['commute_mi']:.1f} mi)"
+        )
 
     if "owner_occ_pct" in row.index:
-        lines.append(f"  Owner-occupancy:   {float(row['owner_occ_pct']):>10.0%}   Median HH income: ${float(row.get('median_hh_income', 0)):,.0f}")
+        lines.append(
+            f"  Owner-occupancy:   {float(row['owner_occ_pct']):>10.0%}   Median HH income: ${float(row.get('median_hh_income', 0)):,.0f}"
+        )
 
     if "zhvi_cagr_5yr" in row.index:
-        cagr5  = float(row["zhvi_cagr_5yr"])
-        cagr10 = float(row.get("zhvi_cagr_10yr", 0)) if "zhvi_cagr_10yr" in row.index else None
+        cagr5 = float(row["zhvi_cagr_5yr"])
+        cagr10 = (
+            float(row.get("zhvi_cagr_10yr", 0))
+            if "zhvi_cagr_10yr" in row.index
+            else None
+        )
         cagr_str = f"5yr CAGR {cagr5:+.1%}"
         if cagr10:
             cagr_str += f"  |  10yr CAGR {cagr10:+.1%}"
         lines.append(f"  {cagr_str}")
 
     if r["zhvf_12mo"] is not None:
-        lines.append(f"  ZHVF 12mo forecast: {r['zhvf_12mo']:+.2%}  ({'price expected to decline' if r['zhvf_12mo'] < 0 else 'price expected to rise'})")
+        lines.append(
+            f"  ZHVF 12mo forecast: {r['zhvf_12mo']:+.2%}  ({'price expected to decline' if r['zhvf_12mo'] < 0 else 'price expected to rise'})"
+        )
 
     if "zhvi_cov" in row.index:
         cov = float(row["zhvi_cov"])
@@ -894,76 +1363,120 @@ def format_report(r: Dict[str, Any]) -> str:
     if r["city_avg_crime"] and "crime_per_1k" in row.index:
         crime_val = float(row["crime_per_1k"])
         vs_avg = (crime_val - r["city_avg_crime"]) / r["city_avg_crime"] * 100.0
-        lines.append(f"  Crime/1k:          {crime_val:>10.1f}    (city median: {r['city_avg_crime']:.1f}/1k, {vs_avg:+.1f}% vs avg)")
+        lines.append(
+            f"  Crime/1k:          {crime_val:>10.1f}    (city median: {r['city_avg_crime']:.1f}/1k, {vs_avg:+.1f}% vs avg)"
+        )
 
     # ── 2. CRIME INTELLIGENCE ─────────────────────────────────────────────────
     section("2. CRIME INTELLIGENCE")
-    crime_val = float(row.get("crime_per_1k", 0)) if "crime_per_1k" in row.index else None
+    crime_val = (
+        float(row.get("crime_per_1k", 0)) if "crime_per_1k" in row.index else None
+    )
 
     if crime_val is not None:
-        cutoff_str = f"  (cutoff {r['crime_cutoff']:.1f}/1k)" if r["crime_cutoff"] else ""
+        cutoff_str = (
+            f"  (cutoff {r['crime_cutoff']:.1f}/1k)" if r["crime_cutoff"] else ""
+        )
         filt = r["filters"].get("crime", {})
-        pass_str = "PASS" if filt.get("pass") else "FAIL" if filt.get("pass") is False else "N/A"
-        lines.append(f"  Crime rate: {crime_val:.1f} / 1,000 residents  |  Filter: {pass_str}{cutoff_str}")
+        pass_str = (
+            "PASS"
+            if filt.get("pass")
+            else "FAIL" if filt.get("pass") is False else "N/A"
+        )
+        lines.append(
+            f"  Crime rate: {crime_val:.1f} / 1,000 residents  |  Filter: {pass_str}{cutoff_str}"
+        )
 
     cb = r["crime_breakdown"]
     if cb:
-        lines.append(f"\n  Crime type breakdown — last 12 months ({cb['total_recent']:,} incidents):")
+        lines.append(
+            f"\n  Crime type breakdown — last 12 months ({cb['total_recent']:,} incidents):"
+        )
         for cat in cb["categories"]:
             bar_str = _bar(cat["pct"], 20)
-            lines.append(f"  {cat['name']:<22}  {bar_str}  {cat['pct']:>4.0f}%  ({cat['count']:,})")
+            lines.append(
+                f"  {cat['name']:<22}  {bar_str}  {cat['pct']:>4.0f}%  ({cat['count']:,})"
+            )
 
         if cb["trend_pct"] is not None:
-            arrow   = "▼" if cb["trend_pct"] < 0 else "▲"
+            arrow = "▼" if cb["trend_pct"] < 0 else "▲"
             quality = "improving" if cb["trend_pct"] < 0 else "worsening"
-            lines.append(f"\n  Trend vs prior 12 months: {arrow} {abs(cb['trend_pct']):.1f}%  {quality}")
+            lines.append(
+                f"\n  Trend vs prior 12 months: {arrow} {abs(cb['trend_pct']):.1f}%  {quality}"
+            )
 
         if cb["peak_day"]:
             lines.append(f"  Peak day: {cb['peak_day']}")
     else:
-        lines.append("  Crime breakdown unavailable (run pipeline to download SAPD data)")
+        lines.append(
+            "  Crime breakdown unavailable (run pipeline to download SAPD data)"
+        )
 
     # ── 3. NEGOTIATION RANGE ──────────────────────────────────────────────────
     section("3. NEGOTIATION RANGE")
     hack_pct = prop.hack_fraction * 100
     if prop.rooms_rented is not None:
-        rent_src  = "Per-room rate (override)"
-        ann_note  = f"{prop.rent_multiplier} bedrooms × ${r['median_rent']:,.0f} × 12"
+        rent_src = "Per-room rate (override)"
+        ann_note = f"{prop.rent_multiplier} bedrooms × ${r['median_rent']:,.0f} × 12"
         hack_desc = f"SFH, {prop.rooms_rented} of {prop.bedrooms} bedrooms rented (room/Airbnb hack)"
     else:
-        rent_src  = "ZORI median rent (per unit)"
-        ann_note  = f"{prop.rent_multiplier} unit{'s' if prop.rent_multiplier > 1 else ''} × ${r['median_rent']:,.0f} × 12"
+        rent_src = "ZORI median rent (per unit)"
+        ann_note = f"{prop.rent_multiplier} unit{'s' if prop.rent_multiplier > 1 else ''} × ${r['median_rent']:,.0f} × 12"
         unit_label2 = f"{prop.units}-unit" if prop.units > 1 else "SFH"
         hack_desc = f"{unit_label2}, {hack_pct:.0f}% rented while you occupy the rest"
-    lines.append(f"  {rent_src}: ${r['median_rent']:,.0f}/mo  |  Annual: ${r['annual_rent']:,.0f}/yr  ({ann_note})")
+    lines.append(
+        f"  {rent_src}: ${r['median_rent']:,.0f}/mo  |  Annual: ${r['annual_rent']:,.0f}/yr  ({ann_note})"
+    )
     lines.append(f"  Hack setup: {hack_desc}")
     lines.append("")
-    lines.append(f"  Max price by gross yield target:")
+    lines.append(
+        f"  Gross yield reference (max price = annual_rent ÷ target; only relevant if below asking):"
+    )
     lines.append(f"  {'Target':<10} {'Max Price':>12}  {'vs Asking':>12}  Note")
     lines.append(f"  {'─'*52}")
-    notes = {0.065: "hard filter floor", 0.070: "recommended target", 0.075: "strong buyer position", 0.080: "best case"}
+    notes = {
+        0.065: "hard filter floor",
+        0.070: "recommended target",
+        0.075: "strong buyer position",
+        0.080: "best case",
+    }
     for y, info in r["yield_targets"].items():
-        gap_str = f"-${abs(info['gap']):,.0f}"
-        above = prop.asking_price <= info["max_price"]
-        marker = "✓ ask already below" if above else f"  {gap_str}"
-        lines.append(f"  {y:.1%}       ${info['max_price']:>12,.0f}  {gap_str:>12}  {notes[y]}")
+        passes_at_ask = prop.asking_price <= info["max_price"]
+        if passes_at_ask:
+            price_str = f"{'✓ passes at ask':>13}"
+            gap_col = f"{'':>12}"
+        else:
+            gap = info["gap"]  # positive = asking above max (need to negotiate down)
+            price_str = f"${info['max_price']:>12,.0f}"
+            gap_col = f"-${gap:>10,.0f}"
+        lines.append(f"  {y:.1%}       {price_str}  {gap_col}  {notes[y]}")
 
     lines.append("")
     bp = r["breakeven_price"]
     if bp > 0:
         gap_be = prop.asking_price - bp
-        lines.append(f"  Phase 1 break-even price: ${bp:,.0f}  (costs = tenant rental income)")
+        lines.append(
+            f"  Phase 1 break-even price: ${bp:,.0f}  (costs = tenant rental income)"
+        )
         if gap_be > 0:
-            lines.append(f"  → Need to negotiate ${gap_be:,.0f} ({gap_be/prop.asking_price*100:.1f}%) below asking to break even")
-            lines.append(f"  → At asking: out-of-pocket ${abs(cf1['net']):,.0f}/mo (before BAH)")
+            lines.append(
+                f"  → Need to negotiate ${gap_be:,.0f} ({gap_be/prop.asking_price*100:.1f}%) below asking to break even"
+            )
+            lines.append(
+                f"  → At asking: out-of-pocket ${abs(cf1['net']):,.0f}/mo (before BAH)"
+            )
         else:
-            lines.append(f"  → Asking price is already BELOW break-even — Phase 1 cash-positive!")
+            lines.append(
+                f"  → Asking price is already BELOW break-even — Phase 1 cash-positive!"
+            )
 
     # ── 4. CASHFLOW ANALYSIS ──────────────────────────────────────────────────
     section("4. CASHFLOW ANALYSIS")
     va_fee = _VA_FEE_FIRST if prop.va_first_use else _VA_FEE_SUBSEQ
     down_amt = prop.asking_price * prop.down_pct
-    lines.append(f"  Loan amount (w/ {va_fee:.2%} VA fee rolled in): ${cf1['loan_amount']:,.0f}")
+    lines.append(
+        f"  Loan amount (w/ {va_fee:.2%} VA fee rolled in): ${cf1['loan_amount']:,.0f}"
+    )
     lines.append(f"  Monthly P&I: ${cf1['pi']:,.0f}   Down payment: ${down_amt:,.0f}")
 
     for phase, cf, label in [
@@ -972,40 +1485,62 @@ def format_report(r: Dict[str, Any]) -> str:
     ]:
         lines.append(f"\n  {label}")
         lines.append(f"  {'─'*50}")
-        lines.append(f"  {'Rental income':<32}  {_sign(cf['gross_rent'])}${cf['gross_rent']:>8,.0f}")
+        lines.append(
+            f"  {'Rental income':<32}  {_sign(cf['gross_rent'])}${cf['gross_rent']:>8,.0f}"
+        )
         lines.append(f"  {'Mortgage (P&I)':<32}  -${cf['pi']:>8,.0f}")
         if cf["pmi"] > 0:
             lines.append(f"  {'PMI':<32}  -${cf['pmi']:>8,.0f}")
         homestead_note = " (homestead exempt $100k)" if phase == 1 else ""
-        lines.append(f"  {'Property tax' + homestead_note:<32}  -${cf['fixed']['property_tax']:>8,.0f}")
+        lines.append(
+            f"  {'Property tax' + homestead_note:<32}  -${cf['fixed']['property_tax']:>8,.0f}"
+        )
         lines.append(f"  {'Insurance':<32}  -${cf['fixed']['insurance']:>8,.0f}")
         if cf["fixed"]["hoa"] > 0:
             lines.append(f"  {'HOA':<32}  -${cf['fixed']['hoa']:>8,.0f}")
         lines.append(f"  {'Vacancy':<32}  -${cf['variable']['vacancy']:>8,.0f}")
         lines.append(f"  {'Maintenance':<32}  -${cf['variable']['maintenance']:>8,.0f}")
         if cf["variable"]["management"] > 0:
-            lines.append(f"  {'Management':<32}  -${cf['variable']['management']:>8,.0f}")
+            lines.append(
+                f"  {'Management':<32}  -${cf['variable']['management']:>8,.0f}"
+            )
         lines.append(f"  {'─'*50}")
         net_str = f"{_sign(cf['net'])}${abs(cf['net']):,.0f}"
         verdict = "✓ cash-positive" if cf["net"] >= 0 else "✗ out-of-pocket"
         lines.append(f"  {'Monthly net':<32}  {net_str:>10}  {verdict}")
         if phase == 1 and prop.bah_monthly > 0:
             bah_str = f"{_sign(cf['net_with_bah'])}${abs(cf['net_with_bah']):,.0f}"
-            bah_v   = "✓ positive with BAH" if cf["net_with_bah"] >= 0 else "✗ still negative with BAH"
-            lines.append(f"  {'With BAH (${:,.0f}/mo)'.format(prop.bah_monthly):<32}  {bah_str:>10}  {bah_v}")
+            bah_v = (
+                "✓ positive with BAH"
+                if cf["net_with_bah"] >= 0
+                else "✗ still negative with BAH"
+            )
+            lines.append(
+                f"  {'With BAH (${:,.0f}/mo)'.format(prop.bah_monthly):<32}  {bah_str:>10}  {bah_v}"
+            )
 
     # ── 5. 3-YEAR HOLD P&L ────────────────────────────────────────────────────
     section("5. 3-YEAR HOLD P&L")
     s0 = r["pnl_scenarios"][0]
     cum_cf_monthly = cf1["net"]
-    lines.append(f"  Down payment: ${s0['down_paid']:,.0f}  |  Loan at entry: ${s0['rem_balance'] + s0['principal']:,.0f}")
-    lines.append(f"  Principal paid down after {prop.hold_years} yrs: ${s0['principal']:,.0f}")
-    lines.append(f"  Cumulative Phase 1 cashflow ({prop.hold_years*12} mo × {_sign(cum_cf_monthly)}${abs(cum_cf_monthly):,.0f}):  {_sign(s0['cum_cf'])}${abs(s0['cum_cf']):,.0f}")
+    lines.append(
+        f"  Down payment: ${s0['down_paid']:,.0f}  |  Loan at entry: ${s0['rem_balance'] + s0['principal']:,.0f}"
+    )
+    lines.append(
+        f"  Principal paid down after {prop.hold_years} yrs: ${s0['principal']:,.0f}"
+    )
+    lines.append(
+        f"  Cumulative Phase 1 cashflow ({prop.hold_years*12} mo × {_sign(cum_cf_monthly)}${abs(cum_cf_monthly):,.0f}):  {_sign(s0['cum_cf'])}${abs(s0['cum_cf']):,.0f}"
+    )
     if prop.bah_monthly > 0:
         bah_total = prop.bah_monthly * prop.hold_years * 12
-        lines.append(f"  Total BAH received over {prop.hold_years} yrs: ${bah_total:,.0f}")
+        lines.append(
+            f"  Total BAH received over {prop.hold_years} yrs: ${bah_total:,.0f}"
+        )
     lines.append(f"\n  Exit scenarios ({prop.selling_cost_pct:.0%} selling costs):")
-    lines.append(f"  {'Scenario':<16}  {'Exit Price':>12}  {'Net Proceeds':>13}  {'Total Return':>13}")
+    lines.append(
+        f"  {'Scenario':<16}  {'Exit Price':>12}  {'Net Proceeds':>13}  {'Total Return':>13}"
+    )
     lines.append(f"  {'─'*58}")
     for s in r["pnl_scenarios"]:
         v = _check(s["total_return"] >= 0)
@@ -1015,22 +1550,32 @@ def format_report(r: Dict[str, Any]) -> str:
             f"  {_sign(s['total_return'])}${abs(s['total_return']):>11,.0f}  {v}"
         )
     if down_amt == 0:
-        lines.append(f"\n  Note: 0% down VA loan = no equity buffer to absorb {prop.selling_cost_pct:.0%} selling costs.")
+        lines.append(
+            f"\n  Note: 0% down VA loan = no equity buffer to absorb {prop.selling_cost_pct:.0%} selling costs."
+        )
 
     # ── 6. SENSITIVITY ────────────────────────────────────────────────────────
     section("6. SENSITIVITY ANALYSIS")
     lines.append("  Phase 2 monthly cashflow vs. interest rate:")
     max_abs_net = max(abs(s["net"]) for s in r["rate_sensitivity"]) or 1
     for s in r["rate_sensitivity"]:
-        marker  = "  ← current" if s["current"] else ""
-        v       = _check(s["net"] >= 0)
+        marker = "  ← current" if s["current"] else ""
+        v = _check(s["net"] >= 0)
         bar_len = max(1, round(abs(s["net"]) / max_abs_net * 20))
         bar_str = "█" * bar_len
-        lines.append(f"  {s['rate']:.1%}   {_sign(s['net'])}${abs(s['net']):>5,.0f}  {v}  {bar_str}{marker}")
+        lines.append(
+            f"  {s['rate']:.1%}   {_sign(s['net'])}${abs(s['net']):>5,.0f}  {v}  {bar_str}{marker}"
+        )
 
-    frac_label = "fraction of bedrooms rented" if prop.rooms_rented is not None else "hack fraction"
+    frac_label = (
+        "fraction of bedrooms rented"
+        if prop.rooms_rented is not None
+        else "hack fraction"
+    )
     lines.append(f"\n  Phase 1 monthly cost vs. {frac_label}:")
-    lines.append(f"  {'Fraction':>8}   {'Rent Income':>12}   {'Monthly Net':>12}   {'With BAH':>10}")
+    lines.append(
+        f"  {'Fraction':>8}   {'Rent Income':>12}   {'Monthly Net':>12}   {'With BAH':>10}"
+    )
     lines.append(f"  {'─'*52}")
     for s in r["hack_sensitivity"]:
         marker = "  ← current" if s["current"] else ""
@@ -1066,42 +1611,68 @@ def format_report(r: Dict[str, Any]) -> str:
         if yp < prop.asking_price:
             lines.append(f"  Negotiate to ≤ ${yp:,.0f} to meet the 6.5% yield floor.")
 
-    # ── 8. DECISION SCORECARD ─────────────────────────────────────────────────
-    section("8. DECISION SCORECARD")
-    sc = r["scorecard"]
-    yp = r["yield_targets"][0.065]["max_price"]
-    scorecard_items = [
-        (sc["filters_at_asking"],  "All hard filters pass at asking price"),
-        (sc.get("filters_at_negot_pass", False), f"All hard filters pass at ${yp:,.0f} (6.5% yield target)"),
-        (sc["phase1_neutral"],     "Phase 1 cash-neutral without BAH"),
-        (sc["phase1_with_bah"] if prop.bah_monthly > 0 else None,
-                                   f"Phase 1 cash-neutral with ${prop.bah_monthly:,.0f}/mo BAH"),
-        (sc["phase2_positive"],    "Phase 2 cash-positive post-PCS"),
-        (sc["return_flat_pos"],    "3-yr total return positive at 0% appreciation"),
-        (sc["return_5pct_pos"],    "3-yr total return positive at +5%/yr appreciation"),
-        (sc["crime_improving"],    "Crime trend improving YoY"),
-        (sc["top_ranked"],         f"ZIP is top-ranked (#{r['rank']} of {r['total_qualifying']})" if r["rank"] else "ZIP is in ranked output"),
-    ]
-    passes = 0
-    for val, label in scorecard_items:
-        if val is None:
-            continue
-        marker = _check(val)
-        if val:
-            passes += 1
-        lines.append(f"  [{marker}] {label}")
+    # ── 8. INVESTMENT DECISION SCORECARD ──────────────────────────────────────
+    section("8. INVESTMENT DECISION SCORECARD")
+    cond = r["conditions"]
 
-    # Verdict
-    lines.append("")
+    def _rag_marker(status: str) -> str:
+        return {"GREEN": "✓", "YELLOW": "~", "RED": "✗"}.get(status, "?")
+
+    def _rag_label(status: str) -> str:
+        return {"GREEN": "GREEN", "YELLOW": "YELLOW", "RED": "RED  "}.get(
+            status, "N/A  "
+        )
+
+    def _cond_line(key: str):
+        c = cond[key]
+        if c["status"] == "N/A":
+            lines.append(f"  [–] {c['label']:<44}  {c['display']}")
+            return
+        m = _rag_marker(c["status"])
+        lbl = _rag_label(c["status"])
+        lines.append(f"  [{m}] {c['label']:<44}  {c['display']:<18}  {lbl}")
+
+    lines.append(f"  {'─'*64}")
+    lines.append(f"  OPERATING CONDITIONS")
+    lines.append(f"  {'─'*64}")
+    _cond_line("phase2_survival")
+    _cond_line("exit_neutrality")
+    _cond_line("stress_test")
+    _cond_line("price_vs_median")
+    _cond_line("coc_phase1")
+
+    # BAH dependency note (inline, not a separate condition)
+    sc = r["scorecard"]
+    if sc.get("phase1_bah_dependent"):
+        lines.append(f"  [!] ⚠  Phase 1 requires BAH — disruption = immediate loss")
+
+    lines.append(f"\n  ZIP QUALITY")
+    lines.append(f"  {'─'*64}")
+    _cond_line("zip_rank")
+    _cond_line("crime_tier")
+    _cond_line("cagr_5yr")
+
+    reds = cond["_red_count"]
+    yellows = cond["_yellow_count"]
+    greens = cond["_green_count"]
+    verdict_tag = cond["_verdict"]
+
+    lines.append(f"\n  {'─'*64}")
+    lines.append(f"  {greens} GREEN  {yellows} YELLOW  {reds} RED")
+
     verdict = _generate_verdict(r)
-    # Word-wrap verdict at ~65 chars
-    words  = verdict.split()
-    line_  = "  VERDICT: "
+    verdict_prefix = {
+        "BUY": "  ✓ BUY CONFIDENTLY — ",
+        "CAUTION": "  ~ BUY WITH CAUTION — ",
+        "SKIP": "  ✗ SKIP — ",
+    }.get(verdict_tag, "  VERDICT: ")
+    words = verdict.split()
+    line_ = verdict_prefix
     wrapped = []
     for w in words:
         if len(line_) + len(w) + 1 > W - 2:
             wrapped.append(line_)
-            line_ = "           " + w + " "
+            line_ = "    " + w + " "
         else:
             line_ += w + " "
     if line_.strip():
@@ -1113,63 +1684,74 @@ def format_report(r: Dict[str, Any]) -> str:
 
 
 def _generate_verdict(r: Dict[str, Any]) -> str:
+    """Generate a one-sentence verdict driven by the conditions scorecard."""
     prop = r["prop"]
-    sc   = r["scorecard"]
-    cf1  = r["cf_p1"]
-    cf2  = r["cf_p2"]
-    yp   = r["yield_targets"][0.065]["max_price"]
+    sc = r["scorecard"]
+    cond = r["conditions"]
+    verdict_tag = cond["_verdict"]
 
-    issues    = []
-    positives = []
-    actions   = []
+    reds = cond["_red_count"]
+    yellows = cond["_yellow_count"]
 
-    # Filter issues
+    red_labels = [
+        c["label"]
+        for k, c in cond.items()
+        if not k.startswith("_") and c.get("status") == "RED"
+    ]
+    yellow_labels = [
+        c["label"]
+        for k, c in cond.items()
+        if not k.startswith("_") and c.get("status") == "YELLOW"
+    ]
+
+    # Hard-filter note
+    filter_note = ""
     if not sc["filters_at_asking"]:
+        yp = r["yield_targets"][0.065]["max_price"]
         gap = prop.asking_price - yp
-        issues.append(f"fails yield filter at asking")
-        actions.append(f"negotiate down ≥ ${gap:,.0f} to ${yp:,.0f} to pass all filters")
+        filter_note = f" Also fails yield hard filter — negotiate ≥ ${gap:,.0f} down to ${yp:,.0f}."
 
-    # Phase 2 post-PCS cashflow
-    if cf2["net"] < -600:
-        issues.append(f"Phase 2 costs ${abs(cf2['net']):,.0f}/mo more than it earns post-PCS")
-        actions.append("plan for property management costs and potential negative cashflow when deployed")
-    elif cf2["net"] < 0:
-        issues.append(f"Phase 2 slightly underwater (${abs(cf2['net']):,.0f}/mo)")
-
-    # Price forecast headwind
+    # ZHVF headwind note
+    zhvf_note = ""
     if r.get("zhvf_12mo") is not None and r["zhvf_12mo"] < -0.02:
-        issues.append(f"Zillow forecasts {r['zhvf_12mo']:.1%} price decline next 12 months")
-        actions.append("consider waiting or negotiating harder given downward price forecast")
+        zhvf_note = (
+            f" Zillow forecasts {r['zhvf_12mo']:.1%} price decline next 12 months."
+        )
 
-    # Positives
-    if sc.get("crime_improving"):
-        positives.append("crime trend improving YoY")
-    if r["rank"] and r["rank"] <= 5:
-        positives.append(f"top #{r['rank']} ranked ZIP")
-    if cf1["net_with_bah"] >= 0 and prop.bah_monthly > 0:
-        positives.append("cash-neutral with BAH")
-    if sc["filters_at_asking"]:
-        positives.append("passes all hard filters at asking price")
+    if verdict_tag == "BUY":
+        rank_str = (
+            f"#{r['rank']} of {r['total_qualifying']}" if r["rank"] else "ranked ZIP"
+        )
+        return (
+            f"All conditions green. {rank_str} ZIP with strong Phase 2 survival and exit profile. "
+            "Verify rent estimates against current listings before closing."
+        ) + zhvf_note
 
-    # Build verdict
-    if not issues:
-        if sc["phase2_positive"]:
-            return ("Strong buy. Passes all filters, Phase 2 cash-positive. "
-                    f"Strong ZIP score (#{r['rank']} of {r['total_qualifying']}). " if r["rank"] else "") + \
-                   "Verify rent estimates against current listings before closing."
-        else:
-            tail = f"#{r['rank']} ranked ZIP" if r["rank"] else "solid ZIP fundamentals"
-            return (f"Solid candidate with {tail}. "
-                    "Passes all filters. Phase 2 cashflow is tight but survivable — "
-                    "confirm property management cost assumptions.")
+    if verdict_tag == "CAUTION":
+        caution_items = "; ".join(yellow_labels)
+        bah_note = (
+            " Phase 1 viable only with BAH — maintain 3-month reserve."
+            if sc.get("phase1_bah_dependent")
+            else ""
+        )
+        return (
+            f"Proceed with caution. Yellow: {caution_items}.{bah_note}{filter_note}{zhvf_note} "
+            "Buy only if you have strong conviction on upside."
+        )
 
-    verdict_parts = []
-    if positives:
-        verdict_parts.append(f"Positives: {', '.join(positives)}.")
-    verdict_parts.append(f"Watch out for: {'; '.join(issues)}.")
-    if actions:
-        verdict_parts.append(f"Recommended: {'; '.join(actions)}.")
-    return " ".join(verdict_parts)
+    # SKIP
+    if reds > 0:
+        red_items = "; ".join(red_labels)
+        return (
+            f"Skip — {reds} red condition(s): {red_items}.{filter_note}{zhvf_note} "
+            "Address the red flags before reconsidering."
+        )
+    # 3+ yellow
+    yellow_items = "; ".join(yellow_labels)
+    return (
+        f"Skip — too many marginal conditions ({yellows} yellow): {yellow_items}.{filter_note}{zhvf_note} "
+        "Wait for a better opportunity or negotiate significantly."
+    )
 
 
 def print_report(r: Dict[str, Any]) -> None:

@@ -9,15 +9,15 @@ Path B logic: screen out unacceptable risk first, then optimize within safe cand
 Some things are NOT tradeable — those are filters, not weights.
 """
 
-from pathlib import Path
 import os
+from pathlib import Path
 
 # ── Project Paths ─────────────────────────────────────────────────────────────
-ROOT_DIR   = Path(__file__).resolve().parents[1]
-DATA_RAW   = ROOT_DIR / "data" / "raw"
-DATA_PROC  = ROOT_DIR / "data" / "processed"
+ROOT_DIR = Path(__file__).resolve().parents[1]
+DATA_RAW = ROOT_DIR / "data" / "raw"
+DATA_PROC = ROOT_DIR / "data" / "processed"
 DATA_FINAL = ROOT_DIR / "data" / "final"
-OUTPUTS    = ROOT_DIR / "outputs"
+OUTPUTS = ROOT_DIR / "outputs"
 
 # ── Duty Station ──────────────────────────────────────────────────────────────
 DUTY_STATION = {
@@ -28,9 +28,9 @@ DUTY_STATION = {
 
 # ── Geographic Scope ──────────────────────────────────────────────────────────
 TARGET_STATE_FIPS = "48"
-TARGET_METRO      = "San Antonio"
+TARGET_METRO = "San Antonio"
 MAX_COMMUTE_MILES = 25
-MAX_COMMUTE_MINS  = 35
+MAX_COMMUTE_MINS = 35
 
 # ── Scoring Weights (must sum to 1.0) ─────────────────────────────────────────
 # These encode your priorities AS A MILITARY HOUSE HACKER, not a pure investor.
@@ -42,11 +42,11 @@ MAX_COMMUTE_MINS  = 35
 #
 # Run: python sensitivity.py to verify rankings hold across weight perturbations.
 WEIGHTS = {
-    "rent_to_price":   0.25,   # viability, not maximization
-    "crime":           0.30,   # non-negotiable — you live there
-    "owner_occupancy": 0.20,   # neighborhood stability proxy
-    "commute":         0.15,   # important but not override-level
-    "stability":       0.10,   # 3-year price stability (ZHVI CoV)
+    "rent_to_price": 0.25,  # viability, not maximization
+    "crime": 0.30,  # non-negotiable — you live there
+    "owner_occupancy": 0.20,  # neighborhood stability proxy
+    "commute": 0.15,  # important but not override-level
+    "stability": 0.10,  # 3-year price stability (ZHVI CoV)
 }
 assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 
@@ -62,22 +62,20 @@ THRESHOLDS = {
     # which most SA ZIPs cannot support. 0.065 reflects current market reality
     # while still excluding ZIPs that genuinely don't cashflow on a VA loan.
     # Revisit this annually as rates and prices shift.
-    "min_rent_to_price":  0.065,
-
+    "min_rent_to_price": 0.065,
     # SA 2026 conforming VA loan limit — adjust if your COE differs
-    "max_home_value":     450_000,
-
+    "max_home_value": 450_000,
     # Tightened from 0.40: below 50% = neighborhood is primarily transient renters
     # That's not who you want living next to you or renting from you
-    "min_owner_occ_pct":  0.50,
-
-    # Above 80% = low rental demand; finding tenants will be hard
-    "max_owner_occ_pct":  0.80,
-
+    "min_owner_occ_pct": 0.50,
+    # Above 85% = low rental demand; finding tenants will be hard.
+    # Raised from 0.80: highly owner-occupied suburban ZIPs near BAMC were being
+    # excluded even though they offer strong appreciation and low crime.
+    "max_owner_occ_pct": 0.85,
     # Tenant base quality screen — low income correlates with:
     # higher delinquency risk, slower resale, weaker neighborhood trajectory
     # $42k = roughly E-5/E-6 BAH + base pay range in SA — your target tenant
-    "min_median_income":  42_000,
+    "min_median_income": 42_000,
 }
 
 # ── Crime Filtering ───────────────────────────────────────────────────────────
@@ -131,7 +129,6 @@ VIOLENT_CRIME_PROBLEMS = {
     "FIGHT",
     "FIGHT GUN INVOLVED",
     "FIGHT KNIFE INVOLVED",
-
     # ROBBERY
     "ROBBERY",
     "ROBBERY IN PROGRESS",
@@ -139,14 +136,12 @@ VIOLENT_CRIME_PROBLEMS = {
     "ROBBERY OF INDIVIDUAL PROGRES",
     "HOLDUP ALARM IN PROGRESS",
     "HOLDUP ALARM RES IN PROGRESS",
-
     # SEXUAL VIOLENCE
     "RAPE",
     "RAPE IN PROGRESS",
     "SEXUAL OFFENSE-CHILD",
     "INTERNET PREDATOR",
     "LEWD CONDUCT",
-
     # SHOOTINGS / WEAPONS
     "SHOOTING",
     "SHOOTING IN PROGRESS",
@@ -155,29 +150,24 @@ VIOLENT_CRIME_PROBLEMS = {
     "SHOTSPOTTER SINGLE ALERT",
     "SHOTSPOTTER MULTIPLE ALERT",
     "WEAPONS",
-
     # ARSON
     "ARSON RESPONSE",
-
     # BURGLARY
     "BURGLARY",
     "BURGLARY (IN PROGRESS)",
     "BURGLARY VEHICLE",
     "BURGLARY VEHICLE IN PROGRESS",
-
     # THEFT
     "THEFT",
     "THEFT IN PROGRESS",
     "THEFT OF VEHICLE",
     "THEFT OF VEHICLE IN PROGRESS",
-
     # CRIMINAL THREATS & ORDERS
     "VIOLATION OF PROTECTIVE ORDER",
     "VIOLATION SEX OFF REG",
     "THREATS BOMB",
     "THREATS BOMB IN PROGRESS",
     "THREAT - BOMB WITH DEVICE",
-
     # NARCOTICS / VICE
     "NARCOTIC LAWS",
     "VICE",
@@ -205,13 +195,52 @@ ZHVI_STABILITY_YEARS = 5
 # Both matter for holds beyond 3 years.
 ZHVI_CAGR_WINDOWS = [5, 10]  # years
 
+# ── Investment Decision Scorecard Thresholds ──────────────────────────────────
+# Used by the 8-condition investment scorecard in property_analyzer.py.
+# Each condition produces GREEN / YELLOW / RED.
+# Final verdict: any RED = SKIP; 3+ YELLOW = SKIP; 1–2 YELLOW = CAUTION; all clear = BUY.
+
+# Condition 1 & 3 — Phase 2 monthly cashflow (current and stress-tested)
+PHASE2_SURVIVAL_FLOOR = -150  # ≥ -$150/mo = GREEN: manageable from W-2 income
+PHASE2_CAUTION_FLOOR = -300  # -$150 to -$300 = YELLOW; < -$300 = RED (pure speculation)
+
+# Condition 2 — 3-yr exit neutrality
+# Computed as: net_proceeds (0% appr) + cumulative Phase1 net_with_bah - down_payment
+# Includes BAH because that's real cash you received while holding.
+EXIT_NEUTRAL_YELLOW = -10_000  # -$10k floor for YELLOW; more negative = RED
+
+# Condition 3 — Interest rate stress test parameters
+STRESS_RATE_DELTA = 0.01  # +1% above your locked rate
+STRESS_RENT_GROWTH = 0.02  # 2%/yr rent growth compounded over hold period
+
+# Condition 4 — Purchase price relative to ZIP median home value
+PRICE_PREMIUM_GREEN = 0.10  # ≤ 10% above median = GREEN
+PRICE_PREMIUM_YELLOW = 0.20  # 10–20% above = YELLOW; > 20% = RED (bad risk asymmetry)
+
+# Condition 5 — Phase 1 cash-on-cash yield (net_with_bah × 12 / asking_price)
+# For VA 0%-down loans, denominator is asset value (no meaningful cash investment).
+# For conventional loans with down payment, denominator is down_payment.
+# Skipped (N/A) for VA 0%-down — Phase 2 survival and exit neutrality cover it.
+COC_GREEN = 0.10  # ≥ 10% = GREEN
+COC_YELLOW = 0.08  # 8–10% = YELLOW; < 8% = RED
+
+# ZIP Quality — Crime tier thresholds (severity-weighted incidents per 1,000 residents)
+# Tier A (GREEN):  < 50/1k — quiet suburban
+# Tier B (YELLOW): 50–100/1k — moderate, acceptable for investment
+# Tier C/D (RED):  > 100/1k — too high for a leveraged primary residence
+CRIME_TIER_THRESHOLDS = {"A": 50, "B": 100}
+
+# ZIP Quality — 5-yr ZHVI CAGR appreciation
+CAGR_5YR_GREEN = 0.03  # ≥ 3%/yr = GREEN
+CAGR_5YR_YELLOW = 0.01  # 1–3%/yr = YELLOW; < 1% = RED
+
 # ── Census API ────────────────────────────────────────────────────────────────
 CENSUS_YEAR = 2022
 CENSUS_TABLES = {
-    "owner_occ_count":  "B25003_002E",
-    "total_housing":    "B25003_001E",
+    "owner_occ_count": "B25003_002E",
+    "total_housing": "B25003_001E",
     "median_hh_income": "B19013_001E",
-    "population":       "B01003_001E",
+    "population": "B01003_001E",
 }
 CENSUS_BASE_URL = "https://api.census.gov/data"
 

@@ -5,26 +5,27 @@ Integration tests for analyze_property(), _evaluate_filters(), display helpers,
 and format_report(). Uses monkeypatched file paths so no real data is required.
 """
 
-import pytest
 import pandas as pd
+import pytest
 
 import property_analyzer as pa
 from property_analyzer import (
+    THRESHOLDS,
     PropertyInput,
-    analyze_property,
-    format_report,
+    _bar,
+    _check,
     _evaluate_filters,
     _sign,
-    _check,
-    _bar,
-    THRESHOLDS,
+    analyze_property,
+    format_report,
 )
 
 PRICE = 215_000
-RENT  = 1_446.0
+RENT = 1_446.0
 
 
 # ── Fixture helpers ───────────────────────────────────────────────────────────
+
 
 def _write_data_files(tmp_path, ranked_df, merged_df):
     """Write ranked and merged DataFrames to temp CSV files; return paths."""
@@ -37,12 +38,12 @@ def _write_data_files(tmp_path, ranked_df, merged_df):
 
 def _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path):
     """Patch all data file path constants in the property_analyzer module."""
-    monkeypatch.setattr(pa, "_RANKED_PATH",         ranked_path)
-    monkeypatch.setattr(pa, "_MERGED_PATH",          merged_path)
-    monkeypatch.setattr(pa, "_ZHVF_PATH",            tmp_path / "no_zhvf.csv")
-    monkeypatch.setattr(pa, "_CRIME_TYPE_CACHE",     tmp_path / "no_type.csv")
-    monkeypatch.setattr(pa, "_CRIME_WEEKDAY_CACHE",  tmp_path / "no_weekday.csv")
-    monkeypatch.setattr(pa, "_CRIME_RAW_PATH",       tmp_path / "no_raw.csv")
+    monkeypatch.setattr(pa, "_RANKED_PATH", ranked_path)
+    monkeypatch.setattr(pa, "_MERGED_PATH", merged_path)
+    monkeypatch.setattr(pa, "_ZHVF_PATH", tmp_path / "no_zhvf.csv")
+    monkeypatch.setattr(pa, "_CRIME_TYPE_CACHE", tmp_path / "no_type.csv")
+    monkeypatch.setattr(pa, "_CRIME_WEEKDAY_CACHE", tmp_path / "no_weekday.csv")
+    monkeypatch.setattr(pa, "_CRIME_RAW_PATH", tmp_path / "no_raw.csv")
 
 
 # ── _evaluate_filters ─────────────────────────────────────────────────────────
@@ -118,6 +119,7 @@ class TestEvaluateFilters:
 
 # ── analyze_property ──────────────────────────────────────────────────────────
 
+
 class TestAnalyzeProperty:
     def test_raises_file_not_found_when_no_data(self, monkeypatch, tmp_path):
         monkeypatch.setattr(pa, "_RANKED_PATH", tmp_path / "no_ranked.csv")
@@ -128,7 +130,9 @@ class TestAnalyzeProperty:
     def test_raises_value_error_for_unknown_zip(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         with pytest.raises(ValueError, match="not found"):
             analyze_property(PropertyInput("99999", PRICE, units=2))
@@ -136,15 +140,35 @@ class TestAnalyzeProperty:
     def test_returns_dict_with_required_top_level_keys(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78239", PRICE, units=2))
         required = {
-            "prop", "row", "in_ranked", "median_rent", "annual_rent", "gross_yield",
-            "home_value", "price_delta", "price_delta_pct", "cf_p1", "cf_p2",
-            "yield_targets", "breakeven_price", "pnl_scenarios", "rate_sensitivity",
-            "hack_sensitivity", "filters", "scorecard", "crime_breakdown",
-            "rank", "score", "total_qualifying",
+            "prop",
+            "row",
+            "in_ranked",
+            "median_rent",
+            "annual_rent",
+            "gross_yield",
+            "home_value",
+            "price_delta",
+            "price_delta_pct",
+            "cf_p1",
+            "cf_p2",
+            "yield_targets",
+            "breakeven_price",
+            "pnl_scenarios",
+            "rate_sensitivity",
+            "hack_sensitivity",
+            "filters",
+            "scorecard",
+            "conditions",
+            "crime_breakdown",
+            "rank",
+            "score",
+            "total_qualifying",
         }
         assert required.issubset(result.keys())
 
@@ -152,7 +176,9 @@ class TestAnalyzeProperty:
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
         """gross_yield = ZORI × units × 12 / asking_price (ZORI is per-unit)."""
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78239", PRICE, units=2))
         expected = (result["median_rent"] * result["prop"].units * 12) / PRICE
@@ -161,7 +187,9 @@ class TestAnalyzeProperty:
     def test_rent_override_used_when_provided(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         override_rent = 1_800.0
         result = analyze_property(
@@ -172,7 +200,9 @@ class TestAnalyzeProperty:
     def test_in_ranked_true_for_qualifying_zip(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78239", PRICE, units=2))
         assert result["in_ranked"] is True
@@ -181,7 +211,9 @@ class TestAnalyzeProperty:
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
         """ZIP 78209 is in merged but not ranked (owner-occ fails)."""
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78209", 310_000, units=2))
         assert result["in_ranked"] is False
@@ -189,7 +221,9 @@ class TestAnalyzeProperty:
     def test_rank_returned_for_qualifying_zip(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78239", PRICE, units=2))
         assert result["rank"] == 1
@@ -197,7 +231,9 @@ class TestAnalyzeProperty:
     def test_price_delta_correct(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78239", PRICE, units=2))
         assert result["price_delta"] == pytest.approx(PRICE - result["home_value"])
@@ -205,7 +241,9 @@ class TestAnalyzeProperty:
     def test_yield_targets_cover_four_levels(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78239", PRICE, units=2))
         assert set(result["yield_targets"].keys()) == {0.065, 0.070, 0.075, 0.080}
@@ -213,28 +251,47 @@ class TestAnalyzeProperty:
     def test_filters_dict_contains_all_expected_checks(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78239", PRICE, units=2))
-        expected_keys = {"price_ceiling", "yield_floor", "owner_occ_min", "owner_occ_max",
-                         "commute", "income"}
+        expected_keys = {
+            "price_ceiling",
+            "yield_floor",
+            "owner_occ_min",
+            "owner_occ_max",
+            "commute",
+            "income",
+        }
         assert expected_keys.issubset(result["filters"].keys())
 
     def test_scorecard_contains_expected_keys(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78239", PRICE, units=2))
-        expected = {"filters_at_asking", "phase1_neutral", "phase1_with_bah",
-                    "phase2_positive", "return_flat_pos", "return_5pct_pos", "top_ranked"}
+        expected = {
+            "filters_at_asking",
+            "phase1_neutral",
+            "phase1_with_bah",
+            "phase2_positive",
+            "return_flat_pos",
+            "return_5pct_pos",
+            "top_ranked",
+        }
         assert expected.issubset(result["scorecard"].keys())
 
     def test_crime_breakdown_none_when_no_crime_data(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
         """Without crime data files, crime_breakdown should be None (graceful)."""
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78239", PRICE, units=2))
         # With no crime raw/cache files, breakdown should be None
@@ -243,7 +300,9 @@ class TestAnalyzeProperty:
     def test_pnl_has_flat_scenario(
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         result = analyze_property(PropertyInput("78239", PRICE, units=2))
         labels = [s["label"] for s in result["pnl_scenarios"]]
@@ -253,7 +312,9 @@ class TestAnalyzeProperty:
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
         """Room-hack mode without --rent-override must raise ValueError."""
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         prop = PropertyInput("78239", PRICE, units=1, bedrooms=4, rooms_rented=3)
         with pytest.raises(ValueError, match="rooms-rented"):
@@ -263,11 +324,17 @@ class TestAnalyzeProperty:
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
         """Room-hack mode with rent_override should complete without error."""
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         prop = PropertyInput(
-            "78239", PRICE, units=1, bedrooms=4,
-            rooms_rented=3, rent_override=650.0,
+            "78239",
+            PRICE,
+            units=1,
+            bedrooms=4,
+            rooms_rented=3,
+            rent_override=650.0,
         )
         result = analyze_property(prop)
         assert result is not None
@@ -276,19 +343,26 @@ class TestAnalyzeProperty:
         self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
     ):
         """annual_rent = per_room × bedrooms × 12 in room-hack mode."""
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
         per_room = 650.0
         bedrooms = 4
         prop = PropertyInput(
-            "78239", PRICE, units=1, bedrooms=bedrooms,
-            rooms_rented=3, rent_override=per_room,
+            "78239",
+            PRICE,
+            units=1,
+            bedrooms=bedrooms,
+            rooms_rented=3,
+            rent_override=per_room,
         )
         result = analyze_property(prop)
         assert result["annual_rent"] == pytest.approx(per_room * bedrooms * 12)
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
+
 
 class TestSignHelper:
     def test_negative_value_returns_minus(self):
@@ -346,12 +420,19 @@ class TestBarHelper:
 
 # ── format_report ─────────────────────────────────────────────────────────────
 
+
 class TestFormatReport:
     @pytest.fixture
-    def analysis_result(self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df):
-        ranked_path, merged_path = _write_data_files(tmp_path, sample_ranked_df, sample_merged_df)
+    def analysis_result(
+        self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
+    ):
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
         _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
-        return analyze_property(PropertyInput("78239", PRICE, units=2, bah_monthly=1_900))
+        return analyze_property(
+            PropertyInput("78239", PRICE, units=2, bah_monthly=1_900)
+        )
 
     def test_returns_non_empty_string(self, analysis_result):
         report = format_report(analysis_result)
@@ -397,7 +478,119 @@ class TestFormatReport:
         assert "PHASE 2" in format_report(analysis_result)
 
     def test_verdict_present(self, analysis_result):
-        assert "VERDICT" in format_report(analysis_result)
+        report = format_report(analysis_result)
+        assert any(
+            tag in report for tag in ("BUY CONFIDENTLY", "BUY WITH CAUTION", "SKIP —")
+        )
 
     def test_filter_pass_present(self, analysis_result):
         assert "PASS" in format_report(analysis_result)
+
+
+# ── Investment Decision Conditions ────────────────────────────────────────────
+
+
+class TestInvestmentConditions:
+    @pytest.fixture
+    def result(self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df):
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
+        _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
+        return analyze_property(
+            PropertyInput("78239", PRICE, units=2, bah_monthly=1_900)
+        )
+
+    def test_conditions_key_exists(self, result):
+        assert "conditions" in result
+
+    def test_all_eight_condition_keys_present(self, result):
+        expected = {
+            "phase2_survival",
+            "exit_neutrality",
+            "stress_test",
+            "price_vs_median",
+            "coc_phase1",
+            "zip_rank",
+            "crime_tier",
+            "cagr_5yr",
+        }
+        assert expected.issubset(result["conditions"].keys())
+
+    def test_each_condition_has_status(self, result):
+        keys = [
+            "phase2_survival",
+            "exit_neutrality",
+            "stress_test",
+            "price_vs_median",
+            "coc_phase1",
+            "zip_rank",
+            "crime_tier",
+            "cagr_5yr",
+        ]
+        for k in keys:
+            assert "status" in result["conditions"][k], f"Missing status in {k}"
+            assert result["conditions"][k]["status"] in (
+                "GREEN",
+                "YELLOW",
+                "RED",
+                "N/A",
+                "?",
+            )
+
+    def test_verdict_is_valid(self, result):
+        assert result["conditions"]["_verdict"] in ("BUY", "CAUTION", "SKIP")
+
+    def test_counts_are_non_negative(self, result):
+        cond = result["conditions"]
+        assert cond["_red_count"] >= 0
+        assert cond["_yellow_count"] >= 0
+        assert cond["_green_count"] >= 0
+
+    def test_coc_na_for_va_zero_down(self, result):
+        """VA 0%-down loan should show N/A for CoC condition."""
+        assert result["conditions"]["coc_phase1"]["status"] == "N/A"
+
+    def test_coc_computed_for_conventional(
+        self, monkeypatch, tmp_path, sample_ranked_df, sample_merged_df
+    ):
+        """Conventional loan with down payment should compute CoC."""
+        ranked_path, merged_path = _write_data_files(
+            tmp_path, sample_ranked_df, sample_merged_df
+        )
+        _patch_data_paths(monkeypatch, tmp_path, ranked_path, merged_path)
+        prop = PropertyInput(
+            "78239",
+            PRICE,
+            units=2,
+            loan_type="Conventional",
+            down_pct=0.10,
+            bah_monthly=1_900,
+        )
+        r = analyze_property(prop)
+        assert r["conditions"]["coc_phase1"]["status"] in ("GREEN", "YELLOW", "RED")
+        assert r["conditions"]["coc_phase1"]["value"] is not None
+
+    def test_stress_test_is_worse_than_base_phase2(self, result):
+        """Stressed Phase 2 net must be ≤ base Phase 2 net (higher rate, lower return)."""
+        stress_net = result["conditions"]["stress_test"]["value"]
+        base_net = result["cf_p2"]["net"]
+        assert stress_net <= base_net
+
+    def test_report_contains_operating_conditions_header(self, result):
+        report = format_report(result)
+        assert "OPERATING CONDITIONS" in report
+
+    def test_report_contains_zip_quality_header(self, result):
+        report = format_report(result)
+        assert "ZIP QUALITY" in report
+
+    def test_report_contains_verdict_tag(self, result):
+        report = format_report(result)
+        verdict_tag = result["conditions"]["_verdict"]
+        verdict_text = {
+            "BUY": "BUY CONFIDENTLY",
+            "CAUTION": "BUY WITH CAUTION",
+            "SKIP": "SKIP",
+        }
+        assert verdict_text[verdict_tag] in report
