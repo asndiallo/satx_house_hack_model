@@ -59,26 +59,26 @@ Anything you're unwilling to compromise on becomes a **filter** that removes ZIP
 
 ZIPs that fail any of these are removed entirely and never scored:
 
-| Filter                | Threshold              | Why                                                                                                                                                                                                                        |
-| --------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Minimum gross yield   | 6.5%                   | VA loan 0% down, 6.5% rate on a 2026 SA median home (~$300k). SA home prices rose ~30% since 2022 without proportional rent growth — 7.2% is no longer achievable in most viable ZIPs. 6.5% is the current cashflow floor. |
-| Maximum home price    | $450,000               | SA conforming VA loan limit — adjust to your COE                                                                                                                                                                           |
-| Owner-occupancy range | 50%–80%                | Below 50% = too transient. Above 80% = low rental demand.                                                                                                                                                                  |
-| Minimum median income | $45,000                | Tenant base quality screen. Correlates with delinquency risk and resale strength. $45k ≈ E-5/E-6 pay range in SA.                                                                                                          |
-| Crime floor           | Safer 50% of ZIPs      | You live there. Safety is not a slider. Only the bottom half of the crime distribution qualifies.                                                                                                                          |
-| Commute to BAMC       | ≤ 35 min straight-line | You drive this daily. ZIPs beyond this are not candidates regardless of yield.                                                                                                                                             |
+| Filter                | Threshold              | Why                                                                                                                                                                                                                         |
+| --------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Minimum gross yield   | 5.5%                   | Recalibrated for SFR room hack: annual income = est_room_rent × rooms_rented × 12. SA room rents ($600–900/room) on a $250k SFR clear 5.5% easily. The 5.5% floor excludes ZIPs where rent fundamentals are genuinely weak. |
+| Maximum home price    | $450,000               | SA conforming VA loan limit — adjust to your COE                                                                                                                                                                            |
+| Owner-occupancy range | 50%–85%                | Below 50% = too transient. Above 85% = low rental demand and harder PCS exit.                                                                                                                                               |
+| Minimum median income | $42,000                | Tenant base quality screen. Correlates with delinquency risk and resale strength. $42k ≈ E-5/E-6 BAH + base pay in SA.                                                                                                      |
+| Crime floor           | Safer 45% of ZIPs      | You live there. Safety is not a slider. Only the safer 45% of the crime distribution qualifies.                                                                                                                             |
+| Commute to BAMC       | ≤ 35 min straight-line | You drive this daily. ZIPs beyond this are not candidates regardless of yield.                                                                                                                                              |
 
 ### Stage 2 — Scored Ranking (graded optimization)
 
 Surviving ZIPs are ranked by a weighted composite of five factors:
 
-| Factor               | Weight | Role                                                                      |
-| -------------------- | ------ | ------------------------------------------------------------------------- |
-| Crime rate           | 30%    | Highest weight — neighborhood safety drives livability and tenant quality |
-| Rent-to-price ratio  | 25%    | Cashflow viability, capped at 12% (above this = suspicious, not a bonus)  |
-| Owner-occupancy rate | 20%    | Neighborhood stability proxy                                              |
-| Commute to BAMC      | 15%    | Daily quality of life — but safety ranks above it                         |
-| Price stability      | 10%    | 5-year ZHVI volatility — for a 3-year hold, boring beats exciting         |
+| Factor               | Weight | Role                                                                                       |
+| -------------------- | ------ | ------------------------------------------------------------------------------------------ |
+| Crime rate           | 30%    | Highest weight — neighborhood safety drives livability and tenant quality                  |
+| Owner-occupancy rate | 25%    | Raised for room-hack: tenants share your home, so neighborhood character matters even more |
+| Rent-to-price ratio  | 20%    | Per-room yield signal (ZORI ÷ median rooms), capped at 12% (above = suspicious)            |
+| Commute to BAMC      | 15%    | Daily quality of life — but safety ranks above it                                          |
+| Price stability      | 10%    | 5-year ZHVI volatility — for a 3-year hold, boring beats exciting                          |
 
 ---
 
@@ -99,33 +99,27 @@ Surviving ZIPs are ranked by a weighted composite of five factors:
 
 One data cleaning step worth knowing: ZIPs with fewer than 5,000 Census residents are excluded from crime scoring entirely, even if they have incident data. Commercial corridors, industrial zones, and fringe areas can have near-zero resident populations but high dispatch activity — producing absurd rates like 8,500 incidents per 1,000 "residents." These are not residential neighborhoods and their rates would corrupt the entire distribution if included.
 
-### 2. Rent-to-Price Ratio (25% of score)
+### 2. Rent-to-Price Ratio (20% of score)
 
-**What it measures:** Annual rental income divided by home purchase price.
+**What it measures:** Per-room annual rental income divided by home purchase price — a room-hack-specific yield signal.
 
-**Formula:** `(monthly rent × 12) ÷ home value`
+**Formula:** `(est_room_rent × 12) ÷ home value`
 
-**Example:** $250,000 home, $1,700/month rent → `($1,700 × 12) ÷ $250,000 = 0.0816` (8.2% gross yield)
+Where `est_room_rent = ZORI ÷ median_rooms_in_ZIP` (Census ACS B25018).
 
-**The 6.5% floor is math, not preference.** At 6.5% VA rate on a $300k home (closer to SA's 2026 median) home:
+**Example:** $250,000 home, ZORI $1,800/mo, median 5.5 rooms → est_room_rent ≈ $327/room → yield = `($327 × 12) ÷ $250,000 = 1.6%` per room. Two rooms rented: 3.2%. The point of this metric in the pipeline is relative ranking — ZIPs where room rents are high relative to prices rank better. Use the property analyzer with `--rent-override` for absolute cashflow decisions.
 
-- Monthly mortgage (PITI): ~$1,900
-- Add 5% vacancy reserve: +$95
-- Add 8% maintenance reserve: +$152
-- Total monthly need: ~$2,147
-- $2,147 × 12 / $300,000 = 0.0858
-
-  6.5% is set below break-even to allow for lower-priced ZIPs where the math shifts. 6.5% yield on $300k = $1,950/month — that's the floor, not comfortable margin. ZIPs above 6.5% are viable; below it you're subsidizing your tenants.
+**The 5.5% pipeline yield floor** (ZORI-based proxy, not per-room): The pipeline's `rent_to_price` filter still uses `ZORI × 12 / ZHVI` as a proxy to screen out ZIPs with fundamentally weak rent-to-price ratios. SA SFR ZIPs typically yield 6–9% on this measure, so the 5.5% floor is permissive enough for SFR candidates while excluding structurally weak markets.
 
 **The 12% yield cap:** In SA, gross yields above 12% almost always mean distressed pricing, deferred maintenance, or data noise — not a hidden gem. Capping yield at 12% before scoring prevents these ZIPs from ranking artificially high on yield while hiding structural problems.
 
-### 3. Owner-Occupancy Rate (20% of score)
+### 3. Owner-Occupancy Rate (25% of score)
 
 **What it measures:** Percentage of homes in the ZIP that are owner-occupied vs. renter-occupied, from U.S. Census data.
 
-**Why the 50%–80% target band:** Neighborhoods where most people own their homes are more stable — better maintained, lower turnover, less crime drift over time. But above 80% means very few renters exist, which makes finding tenants harder and complicates resale to other investors at PCS time.
+**Why 25% weight (raised from 20%):** In a room hack, your tenants live inside your home — they're not just neighbors, they're housemates. Neighborhood character, stability, and the type of people who choose to live there matter even more than in a duplex setup where you have physical separation. This is the one weight that rises directly from the SFR room-hack model shift.
 
-The minimum was raised from 40% to 50% compared to earlier versions. Below 50% = primarily transient renters = not a neighborhood where military families tend to choose to live.
+**Why the 50%–85% target band:** Below 50% = primarily transient renters = not a neighborhood where military families tend to choose to live, and not the tenant pool you want sharing your home. Above 85% = low rental demand, harder to find tenants, and harder PCS exit (fewer investors as buyers).
 
 ### 4. Commute to BAMC (15% of score)
 
@@ -150,7 +144,7 @@ The minimum was raised from 40% to 50% compared to earlier versions. Below 50% =
 ## How the Final Score Is Calculated
 
 ```math
-Final Score = (Crime × 0.30) + (Yield × 0.25) + (Owner Occ × 0.20) + (Commute × 0.15) + (Stability × 0.10)
+Final Score = (Crime × 0.30) + (Owner Occ × 0.25) + (Yield × 0.20) + (Commute × 0.15) + (Stability × 0.10)
 ```
 
 Each component is normalized 0–1 relative to the surviving ZIP pool before combining. **Scores are relative, not absolute.** A crime score of 0.8 means "safer than 80% of ZIPs that passed the hard filters" — not "objectively safe."
@@ -173,7 +167,7 @@ The model uses five sources. Two require a manual one-time download. Three are f
    - Save as: `data/raw/zillow_zhvi_zip.csv`
 
 2. Zillow Observed Rent Index (ZORI)
-   - What it is: Monthly median asking rent by ZIP code — a **per-unit** repeat-rent index, Census-weighted across all housing types (apartments, SFH, condos). Represents the market rate for one typical rental unit in the ZIP, not a whole-property number.
+   - What it is: Monthly median asking rent by ZIP code — a **per-unit** repeat-rent index, Census-weighted across all housing types (apartments, SFH, condos). Represents the market rate for one typical rental unit in the ZIP. For SFR room hacking, the pipeline derives `est_room_rent = ZORI ÷ median_rooms` (Census B25018) as a per-room rate estimate.
    - Where: Same page → "Rentals" → "ZORI (Smoothed): All Homes Plus Multifamily" → ZIP code → Download
    - Save as: `data/raw/zillow_zori_zip.csv`
 
@@ -190,9 +184,9 @@ The model uses five sources. Two require a manual one-time download. Three are f
 ### Auto-Downloaded (No Action Required)
 
 1. U.S. Census Bureau — American Community Survey
-   - Owner-occupancy rates, household income, and population by ZIP code
+   - Owner-occupancy rates, household income, median rooms per unit, and population by ZIP code
    - Auto-fetched from the Census API on first run and cached locally
-   - Income data is used for the tenant base quality filter
+   - Median rooms (B25018) is used to compute `est_room_rent = ZORI ÷ median_rooms`, the per-room rent estimate used by the property analyzer in room-hack mode
 
 2. San Antonio Police Department — Calls for Service
    - Every police dispatch call in SA with incident type and ZIP code
@@ -269,7 +263,8 @@ The output table printed to your terminal and saved to `outputs/top_zips_summary
 | `rank`              | Overall rank. 1 = best.                                                                                             |
 | `zip`               | ZIP code                                                                                                            |
 | `median_home_value` | Estimated median home price                                                                                         |
-| `median_rent`       | Estimated median asking rent                                                                                        |
+| `median_rent`       | Estimated median asking rent (ZORI per unit)                                                                        |
+| `est_room_rent`     | Estimated per-room rent (ZORI ÷ median rooms). Used as fallback in room-hack mode when no `--rent-override` is set. |
 | `rent_to_price`     | Gross yield (annual rent ÷ price). Raw value, before the 12% cap.                                                   |
 | `commute_minutes`   | Estimated drive time to BAMC                                                                                        |
 | `crime_per_1k`      | Criminal incidents per 1,000 residents. Lower = safer.                                                              |
@@ -322,22 +317,27 @@ Once the pipeline has produced `ranked_zip_scores.csv`, you can evaluate any spe
 **Run the pipeline first**, then:
 
 ```bash
-# Duplex at $265k in 78109, VA loan, with BAH
+# SFR room hack — 3-bed home, rent 2 rooms (pipeline est_room_rent used automatically)
+python analyze_property.py --zip 78239 --price 265000 --bedrooms 3 \
+    --rooms-rented 2 --bah 1900
+
+# SFR room hack — 4-bed home, rent 3 rooms, with actual comp rent override
+python analyze_property.py --zip 78239 --price 285000 --bedrooms 4 \
+    --rooms-rented 3 --rent-override 750 --bah 1900
+
+# Duplex — unit hack mode (you live in one unit, rent the other)
 python analyze_property.py --zip 78109 --price 265000 --units 2 --bah 1900
 
 # Triplex, known rent (ZORI may not reflect actual unit rents in this ZIP)
 python analyze_property.py --zip 78239 --price 320000 --units 3 --rent-override 1100
-
-# Room hack — SFH, 4 bedrooms, you keep 1, rent 3 at $650/room
-python analyze_property.py --zip 78239 --price 265000 --units 1 --bedrooms 4 \
-    --rooms-rented 3 --rent-override 650 --bah 1900
 
 # Conventional loan, 5% down
 python analyze_property.py --zip 78209 --price 285000 --units 2 \
     --loan-type conventional --down-pct 5
 
 # JSON output for programmatic use
-python analyze_property.py --zip 78239 --price 215000 --units 2 --output json
+python analyze_property.py --zip 78239 --price 265000 --bedrooms 3 \
+    --rooms-rented 2 --output json
 ```
 
 ### What the Report Covers
@@ -357,29 +357,36 @@ The report is organized into 8 sections:
 
 ### Key Parameters
 
-| Flag              | Default  | Description                                                                                                  |
-| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
-| `--zip`           | required | 5-digit ZIP code                                                                                             |
-| `--price`         | required | Asking price in dollars                                                                                      |
-| `--units`         | 2        | 1=SFH, 2=duplex, 3=triplex, 4=fourplex                                                                       |
-| `--bedrooms`      | 3        | Total bedrooms (used in room-hack mode)                                                                      |
-| `--rooms-rented`  | —        | Room-hack mode: number of bedrooms to rent. Requires `--rent-override`.                                      |
-| `--bah`           | 0        | Monthly BAH — shown as offset to your out-of-pocket Phase 1 cost                                             |
-| `--rent-override` | —        | Per-unit rent (unit mode) or per-room rent (room-hack mode). Use when ZORI doesn't match actual comparables. |
-| `--rate`          | 6.875%   | Interest rate in percent                                                                                     |
-| `--loan-type`     | VA       | `VA` or `conventional`                                                                                       |
-| `--down-pct`      | 0        | Down payment in percent (e.g. `5` = 5%)                                                                      |
-| `--va-second-use` | —        | Flag for 3.30% funding fee (vs. 2.15% first use)                                                             |
-| `--hack-fraction` | auto     | Override fraction rented (auto-set from `--units` or `--rooms-rented`)                                       |
+| Flag              | Default  | Description                                                                                                                                           |
+| ----------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--zip`           | required | 5-digit ZIP code                                                                                                                                      |
+| `--price`         | required | Asking price in dollars                                                                                                                               |
+| `--units`         | 1        | 1=SFH (default — room hack), 2=duplex, 3=triplex, 4=fourplex                                                                                          |
+| `--bedrooms`      | 3        | Total bedrooms in the property                                                                                                                        |
+| `--rooms-rented`  | —        | Room-hack mode: number of bedrooms to rent. Pipeline `est_room_rent` used automatically; add `--rent-override` when you have actual comparable rents. |
+| `--bah`           | 0        | Monthly BAH — shown as offset to your out-of-pocket Phase 1 cost                                                                                      |
+| `--rent-override` | —        | Per-unit rent (unit mode) or per-room rate (room-hack mode). Use when you have real comps to validate or replace the pipeline estimate.               |
+| `--rate`          | 6.875%   | Interest rate in percent                                                                                                                              |
+| `--loan-type`     | VA       | `VA` or `conventional`                                                                                                                                |
+| `--down-pct`      | 0        | Down payment in percent (e.g. `5` = 5%)                                                                                                               |
+| `--va-second-use` | —        | Flag for 3.30% funding fee (vs. 2.15% first use)                                                                                                      |
+| `--hack-fraction` | auto     | Override fraction rented (auto-set from `--units` or `--rooms-rented`)                                                                                |
 
-### How ZORI Rent Is Used
+### How Rent Is Used
 
-ZORI is a **per-unit** index — it represents the market rate for one typical rental unit in the ZIP (Census-weighted across apartments, houses, condos). The analyzer uses it accordingly:
+**Unit hack mode (duplex, triplex…):** Uses ZORI as a per-unit rate.
 
-- **Unit hack (duplex, triplex…):** Phase 1 income = ZORI × `units` × `hack_fraction` · Phase 2 income = ZORI × `units`
-- **Room hack (SFH bedrooms):** Phase 1 income = per-room rate × `bedrooms` × `hack_fraction` · Phase 2 income = per-room rate × `bedrooms`
+- Phase 1 income = ZORI × `units` × `hack_fraction`
+- Phase 2 income = ZORI × `units`
 
-This means a duplex at $265k with ZORI $1,686/unit has a _total_ annual potential of $1,686 × 2 × 12 = $40,464. The 6.5%-yield max price is $622k — not a bug, that's the correct investment math. If actual duplex units in that ZIP rent for less than ZORI, use `--rent-override` with real comparables.
+**Room hack mode (SFH bedrooms):** Uses a per-room rate — either `--rent-override` (preferred when you have real comps) or `est_room_rent` from the pipeline (ZORI ÷ median rooms per Census B25018).
+
+- Phase 1 income = per-room rate × `rooms_rented`
+- Phase 2 income = per-room rate × `bedrooms`
+
+`est_room_rent` is a ZIP-level estimate from the pipeline and is automatically used when `--rooms-rented` is specified without `--rent-override`. It's a reasonable starting point but is derived from ZORI (which covers all unit types) divided by median rooms — not actual room-rental comparable data. Always validate against current listings on Zillow/Craigslist before finalizing cashflow decisions.
+
+If actual unit rents differ from ZORI (common for duplexes in specific micro-markets), use `--rent-override` with real comparables in either mode.
 
 ---
 
@@ -445,9 +452,9 @@ Everything tunable is in `src/config.py`. No other file needs to be touched.
 
 ```python
 WEIGHTS = {
-    "rent_to_price":   0.25,   # viability, not maximization
+    "rent_to_price":   0.20,   # per-room yield signal; viability, not maximization
     "crime":           0.30,   # highest — you live there, non-negotiable
-    "owner_occupancy": 0.20,   # neighborhood stability
+    "owner_occupancy": 0.25,   # raised for room hack — tenants share your home
     "commute":         0.15,   # important, but below safety/cashflow
     "stability":       0.10,   # 3-year hold = price volatility is real risk
 }
@@ -459,18 +466,18 @@ Must add up to 1.0 exactly. The model throws an error if they don't.
 
 ```python
 THRESHOLDS = {
-    "min_rent_to_price": 0.072,   # math-derived cashflow floor (see above)
+    "min_rent_to_price": 0.055,   # SFR room-hack floor (ZORI-based proxy; see above)
     "max_home_value":    450_000,  # SA VA loan conforming limit — adjust to your COE
     "min_owner_occ_pct": 0.50,    # below = too transient
-    "max_owner_occ_pct": 0.80,    # above = low rental demand
-    "min_median_income": 45_000,  # tenant base quality screen
+    "max_owner_occ_pct": 0.85,    # above = low rental demand, hard PCS exit
+    "min_median_income": 42_000,  # tenant base quality screen (~E-5/E-6 pay in SA)
 }
 ```
 
 ### Crime Floor
 
 ```python
-CRIME_PERCENTILE_CUTOFF = 0.50  # keep only the safer half of candidate ZIPs
+CRIME_PERCENTILE_CUTOFF = 0.45  # keep only the safer 55% of candidate ZIPs
 ```
 
 Lower this number = stricter safety requirement. Raise it = more ZIPs qualify but some will be in areas you'd think twice about.
@@ -620,7 +627,7 @@ The `--diagnose` flag prints row counts, value ranges, and ZIP overlap counts af
 One of the three manual files is missing or misnamed. Confirm `zillow_zhvi_zip.csv`, `zillow_zori_zip.csv`, and `uszips.csv` are all in `data/raw/` with those exact names.
 
 **Few or zero results after filtering**
-Run `--diagnose` to see the filter breakdown. Most common cause: `min_rent_to_price = 0.072` is cutting most ZIPs. If SA yields have compressed, try lowering to `0.065`. The diagnose output shows exactly how many ZIPs each filter removes.
+Run `--diagnose` to see the filter breakdown. Most common cause: `min_rent_to_price = 0.055` is still cutting most ZIPs. If SA yields have compressed further, try lowering to `0.045`. The diagnose output shows exactly how many ZIPs each filter removes.
 
 **Crime download fails or times out**
 The SA crime file is ~600MB. On a slow connection it may time out. Try again on a better connection, or manually download from the [SA Open Data portal](https://data.sanantonio.gov) and save as `data/raw/sa_crime_raw.csv`.

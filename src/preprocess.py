@@ -6,15 +6,24 @@ No scoring logic here — just clean, typed, merged data.
 """
 
 import logging
-import pandas as pd
-import numpy as np
 
-from config import TARGET_METRO, ZHVI_STABILITY_YEARS, ZHVI_CAGR_WINDOWS, VIOLENT_CRIME_PROBLEMS, MIN_POPULATION_FOR_CRIME
+import numpy as np
+import pandas as pd
+
+from config import (
+    MIN_POPULATION_FOR_CRIME,
+    NON_SAPD_ZIPS,
+    TARGET_METRO,
+    VIOLENT_CRIME_PROBLEMS,
+    ZHVI_CAGR_WINDOWS,
+    ZHVI_STABILITY_YEARS,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # ── Zillow ────────────────────────────────────────────────────────────────────
+
 
 def process_zhvi(df: pd.DataFrame) -> pd.DataFrame:
     """Extract most recent home value per ZIP, filtered to San Antonio metro."""
@@ -23,7 +32,7 @@ def process_zhvi(df: pd.DataFrame) -> pd.DataFrame:
     df["zip"] = df["RegionName"].astype(str).str.zfill(5)
     date_cols = [c for c in df.columns if c[:4].isdigit()]
     df["median_home_value"] = pd.to_numeric(df[date_cols[-1]], errors="coerce")
-    result = df[["zip", "median_home_value"]].dropna()
+    result = df[["zip", "median_home_value"]].dropna(subset=["median_home_value"])
     logger.info(f"ZHVI: {len(result)} ZIPs after processing")
     return result
 
@@ -70,10 +79,12 @@ def compute_zhvi_stability(df: pd.DataFrame) -> pd.DataFrame:
     cov = price_data.std(axis=1) / price_data.mean(axis=1)
     cov[~row_valid] = np.nan
 
-    result = pd.DataFrame({
-        "zip": df["zip"].values,
-        "zhvi_cov": cov.values,
-    }).dropna()
+    result = pd.DataFrame(
+        {
+            "zip": df["zip"].values,
+            "zhvi_cov": cov.values,
+        }
+    ).dropna()
 
     result = result[result["zhvi_cov"] > 0]  # drop any zero-variance edge cases
 
@@ -115,7 +126,7 @@ def compute_zhvi_cagr(df: pd.DataFrame) -> pd.DataFrame:
             )
             continue
         start_vals = pd.to_numeric(df[date_cols[-(n_months + 1)]], errors="coerce")
-        end_vals   = pd.to_numeric(df[date_cols[-1]],              errors="coerce")
+        end_vals = pd.to_numeric(df[date_cols[-1]], errors="coerce")
         result[col_name] = (end_vals.values / start_vals.values) ** (1 / years) - 1
         cagr_cols.append(col_name)
 
@@ -126,7 +137,8 @@ def compute_zhvi_cagr(df: pd.DataFrame) -> pd.DataFrame:
             f"ZHVI CAGR: {len(result)} ZIPs | "
             + " | ".join(
                 f"{c}: {result[c].min():.2%} – {result[c].max():.2%}"
-                for c in cagr_cols if c in result.columns
+                for c in cagr_cols
+                if c in result.columns
             )
         )
     return result
@@ -146,16 +158,33 @@ def process_zori(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Census ────────────────────────────────────────────────────────────────────
 
+
 def process_census(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate owner-occupancy rate and clean income/population data.
     Population is passed through for crime rate normalization downstream.
     median_hh_income is passed through for the income hard filter.
+
+    avg_renter_bedrooms: weighted average bedrooms per renter-occupied unit,
+    computed from B25042 bedroom distribution. Used to derive est_room_rent
+    in merge_datasets(). Typical SA range: 2.2–2.8 bedrooms/unit.
     """
     df = df.copy()
     df["zip"] = df["zip"].astype(str).str.zfill(5)
 
-    for col in ["owner_occ_count", "total_housing", "median_hh_income", "population"]:
+    for col in [
+        "owner_occ_count",
+        "total_housing",
+        "median_hh_income",
+        "population",
+        "renter_total",
+        "renter_0bed",
+        "renter_1bed",
+        "renter_2bed",
+        "renter_3bed",
+        "renter_4bed",
+        "renter_5bed",
+    ]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -166,9 +195,44 @@ def process_census(df: pd.DataFrame) -> pd.DataFrame:
     if "median_hh_income" in df.columns:
         df.loc[df["median_hh_income"] < 0, "median_hh_income"] = None
 
+    # Compute avg_renter_bedrooms from B25042 bedroom distribution.
+    # Studios (0-bed) count as 0; 5+ bed capped at 5 (conservative for SA).
+    renter_cols = [
+        "renter_0bed",
+        "renter_1bed",
+        "renter_2bed",
+        "renter_3bed",
+        "renter_4bed",
+        "renter_5bed",
+    ]
+    if all(c in df.columns for c in renter_cols + ["renter_total"]):
+        weighted_sum = (
+            df["renter_0bed"] * 0
+            + df["renter_1bed"] * 1
+            + df["renter_2bed"] * 2
+            + df["renter_3bed"] * 3
+            + df["renter_4bed"] * 4
+            + df["renter_5bed"] * 5
+        )
+        valid = df["renter_total"] > 0
+        df["avg_renter_bedrooms"] = np.nan
+        df.loc[valid, "avg_renter_bedrooms"] = (
+            weighted_sum[valid] / df.loc[valid, "renter_total"]
+        )
+        # Clip to [1.0, 5.0] — guard against Census data anomalies
+        df["avg_renter_bedrooms"] = df["avg_renter_bedrooms"].clip(lower=1.0, upper=5.0)
+        n_valid = df["avg_renter_bedrooms"].notna().sum()
+        logger.info(
+            f"avg_renter_bedrooms computed for {n_valid} ZIPs | "
+            f"range: {df['avg_renter_bedrooms'].min():.2f} – "
+            f"{df['avg_renter_bedrooms'].max():.2f}"
+        )
+
     keep = ["zip", "owner_occ_pct", "median_hh_income"]
     if "population" in df.columns:
         keep.append("population")
+    if "avg_renter_bedrooms" in df.columns:
+        keep.append("avg_renter_bedrooms")
 
     result = df[keep]
     logger.info(f"Census: {len(result)} ZIPs after processing")
@@ -177,7 +241,10 @@ def process_census(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Crime ─────────────────────────────────────────────────────────────────────
 
-def process_crime(crime_df: pd.DataFrame, census_df: pd.DataFrame = None) -> pd.DataFrame:
+
+def process_crime(
+    crime_df: pd.DataFrame, census_df: pd.DataFrame = None
+) -> pd.DataFrame:
     """
     Aggregate SAPD CFS incidents to ZIP level, normalized per 1,000 residents.
 
@@ -191,8 +258,12 @@ def process_crime(crime_df: pd.DataFrame, census_df: pd.DataFrame = None) -> pd.
     df = crime_df.copy()
 
     zip_col = next(
-        (c for c in df.columns if c.lower() in ("postal_code", "zip", "zipcode", "zip_code")),
-        None
+        (
+            c
+            for c in df.columns
+            if c.lower() in ("postal_code", "zip", "zipcode", "zip_code")
+        ),
+        None,
     )
     if zip_col is None:
         raise ValueError(
@@ -212,11 +283,26 @@ def process_crime(crime_df: pd.DataFrame, census_df: pd.DataFrame = None) -> pd.
             f"({len(df) / before * 100:.1f}% of all calls)"
         )
     else:
-        logger.warning("No 'Problem' column — cannot filter by type. All calls counted.")
+        logger.warning(
+            "No 'Problem' column — cannot filter by type. All calls counted."
+        )
 
     # Exclude JBSA ZIPs — military base population distorts crime normalization
     military_zips = {"78234", "78235", "78236", "78243"}
     df = df[~df["zip"].isin(military_zips)]
+
+    # Exclude ZIPs policed by non-SAPD agencies (Schertz PD, county SO, etc.)
+    # Their SAPD call counts are near-zero by definition, producing artificially
+    # safe crime rates that corrupt the percentile distribution.
+    # See NON_SAPD_ZIPS in config.py for rationale and verification notes.
+    if NON_SAPD_ZIPS:
+        before_non_sapd = len(df)
+        df = df[~df["zip"].isin(NON_SAPD_ZIPS)]
+        removed = before_non_sapd - len(df)
+        if removed > 0:
+            logger.info(
+                f"Excluded {removed} non-SAPD ZIP(s) from crime data: {sorted(NON_SAPD_ZIPS)}"
+            )
 
     crime_counts = df.groupby("zip").size().reset_index(name="crime_incidents")
 
@@ -259,6 +345,7 @@ def process_crime(crime_df: pd.DataFrame, census_df: pd.DataFrame = None) -> pd.
 
 # ── Merge ─────────────────────────────────────────────────────────────────────
 
+
 def merge_datasets(
     zhvi: pd.DataFrame,
     zori: pd.DataFrame,
@@ -278,10 +365,10 @@ def merge_datasets(
     Population is dropped after merge (only needed for crime normalization).
     """
     datasets = {
-        "ZHVI":    zhvi,
-        "ZORI":    zori,
-        "Census":  census,
-        "Crime":   crime,
+        "ZHVI": zhvi,
+        "ZORI": zori,
+        "Census": census,
+        "Crime": crime,
         "Commute": commute,
     }
     if stability is not None:
@@ -300,11 +387,37 @@ def merge_datasets(
         base = base.merge(cagr, on="zip", how="left")
         cagr_cols = [c for c in cagr.columns if c != "zip"]
         n_filled = base[cagr_cols[0]].notna().sum() if cagr_cols else 0
-        logger.info(f"CAGR merged (left join): {n_filled}/{len(base)} ZIPs have CAGR data")
+        logger.info(
+            f"CAGR merged (left join): {n_filled}/{len(base)} ZIPs have CAGR data"
+        )
 
     # Population was only needed for crime normalization — drop from final dataset
     if "population" in base.columns:
         base = base.drop(columns=["population"])
+
+    # Per-room rent estimate: ZORI ÷ avg_renter_bedrooms (from B25042).
+    # avg_renter_bedrooms is the Census-derived weighted average bedrooms per
+    # renter-occupied unit (~2.3–2.8 for SA). This is the correct denominator
+    # for per-room rate. B25018 (median rooms ~5.5) was wrong — it counts all
+    # rooms (kitchen, living, etc.), not just bedrooms.
+    # Used by property_analyzer as a fallback when --rent-override is not provided.
+    if "median_rent" in base.columns and "avg_renter_bedrooms" in base.columns:
+        valid = base["avg_renter_bedrooms"].gt(0) & base["avg_renter_bedrooms"].notna()
+        base["est_room_rent"] = None
+        base.loc[valid, "est_room_rent"] = (
+            base.loc[valid, "median_rent"] / base.loc[valid, "avg_renter_bedrooms"]
+        )
+        n_filled = base["est_room_rent"].notna().sum()
+        if n_filled > 0:
+            rr = base.loc[base["est_room_rent"].notna(), "est_room_rent"]
+            logger.info(
+                f"est_room_rent computed for {n_filled}/{len(base)} ZIPs | "
+                f"range: ${rr.min():.0f} – ${rr.max():.0f} | median: ${rr.median():.0f}"
+            )
+    else:
+        logger.warning(
+            "Cannot compute est_room_rent — median_rent or avg_renter_bedrooms missing"
+        )
 
     logger.info(f"Merged dataset: {len(base)} ZIPs")
     return base

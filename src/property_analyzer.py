@@ -152,7 +152,9 @@ def _categorize(problem_upper: str) -> str:
 class PropertyInput:
     zip_code: str
     asking_price: float
-    units: int = 2  # 1=SFH/condo, 2=duplex, 3=triplex, 4=fourplex
+    units: int = (
+        1  # 1=SFH/condo (default — SFR room hack), 2=duplex, 3=triplex, 4=fourplex
+    )
     bedrooms: int = 3
     hack_fraction: Optional[float] = (
         None  # fraction of property rented; auto-set from units
@@ -1034,18 +1036,30 @@ def analyze_property(prop: PropertyInput) -> Dict[str, Any]:
             "It may be outside the San Antonio metro area or missing from source data."
         )
 
-    # Room-hack mode requires an explicit per-room rate (ZORI is per-unit, not per-bedroom)
-    if prop.rooms_rented is not None and prop.rent_override is None:
-        raise ValueError(
-            f"Room-hack mode (--rooms-rented {prop.rooms_rented}) requires --rent-override "
-            f"with the per-room monthly rate. ZORI doesn't provide per-bedroom estimates. "
-            f"Check Airbnb/Zillow comparables for room rents in {prop.zip_code}."
-        )
+    # Determine the per-unit/per-room rate to use for cashflow calculations.
+    # Priority: explicit --rent-override > est_room_rent (pipeline) > ZORI median
+    if prop.rent_override is not None:
+        median_rent = prop.rent_override
+    elif prop.rooms_rented is not None:
+        # Room-hack mode: use est_room_rent from pipeline (ZORI ÷ avg_renter_bedrooms).
+        # This is a ZIP-level estimate; use --rent-override for listing-specific comps.
+        est = row.get("est_room_rent")
+        est_val = float(est) if est is not None and not pd.isna(est) else 0.0
+        if est_val > 0:
+            median_rent = est_val
+            logger.info(
+                f"ZIP {prop.zip_code}: using est_room_rent ${est_val:,.0f}/mo "
+                f"(pipeline estimate). Use --rent-override for actual comps."
+            )
+        else:
+            raise ValueError(
+                f"Room-hack mode (--rooms-rented {prop.rooms_rented}) has no est_room_rent "
+                f"for ZIP {prop.zip_code}. Use --rent-override with a per-room monthly rate. "
+                f"Tip: re-run the pipeline to regenerate est_room_rent data."
+            )
+    else:
+        median_rent = float(row.get("median_rent", 0))
 
-    # Use rent_override if provided, else ZORI median (per-unit)
-    median_rent = (
-        prop.rent_override if prop.rent_override else float(row.get("median_rent", 0))
-    )
     if median_rent <= 0:
         raise ValueError(
             f"No rent data for ZIP {prop.zip_code}. Use --rent-override to specify expected rent."
@@ -1315,7 +1329,7 @@ def format_report(r: Dict[str, Any]) -> str:
         f"  Median home value:  ${r['home_value']:>10,.0f}   Asking: ${prop.asking_price:,.0f} ({delta_sign}{r['price_delta_pct']:.1f}% vs median)"
     )
     yield_note = (
-        "⚠ below 6.5% floor"
+        f"⚠ below {THRESHOLDS['min_rent_to_price']:.1%} floor"
         if r["gross_yield"] < THRESHOLDS["min_rent_to_price"]
         else "✓ above floor"
     )
@@ -1416,9 +1430,15 @@ def format_report(r: Dict[str, Any]) -> str:
     section("3. NEGOTIATION RANGE")
     hack_pct = prop.hack_fraction * 100
     if prop.rooms_rented is not None:
-        rent_src = "Per-room rate (override)"
+        rent_src = (
+            "Per-room rate (override)"
+            if prop.rent_override is not None
+            else "Est. room rent (pipeline: ZORI ÷ median rooms)"
+        )
         ann_note = f"{prop.rent_multiplier} bedrooms × ${r['median_rent']:,.0f} × 12"
-        hack_desc = f"SFH, {prop.rooms_rented} of {prop.bedrooms} bedrooms rented (room/Airbnb hack)"
+        hack_desc = (
+            f"SFH, {prop.rooms_rented} of {prop.bedrooms} bedrooms rented (room hack)"
+        )
     else:
         rent_src = "ZORI median rent (per unit)"
         ann_note = f"{prop.rent_multiplier} unit{'s' if prop.rent_multiplier > 1 else ''} × ${r['median_rent']:,.0f} × 12"
@@ -1608,8 +1628,11 @@ def format_report(r: Dict[str, Any]) -> str:
     else:
         lines.append(f"  {fail_count} filter(s) FAIL at asking price.")
         yp = r["yield_targets"][0.065]["max_price"]
+        min_yield = THRESHOLDS["min_rent_to_price"]
         if yp < prop.asking_price:
-            lines.append(f"  Negotiate to ≤ ${yp:,.0f} to meet the 6.5% yield floor.")
+            lines.append(
+                f"  Negotiate to ≤ ${yp:,.0f} to meet the {min_yield:.1%} yield floor."
+            )
 
     # ── 8. INVESTMENT DECISION SCORECARD ──────────────────────────────────────
     section("8. INVESTMENT DECISION SCORECARD")

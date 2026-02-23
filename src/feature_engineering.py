@@ -9,18 +9,60 @@ not in scoring.py as a weighted factor.
 """
 
 import logging
-import pandas as pd
-import numpy as np
 
-from config import THRESHOLDS, CRIME_PERCENTILE_CUTOFF, YIELD_CAP, MAX_COMMUTE_MINS, MAX_COMMUTE_MILES
+import numpy as np
+import pandas as pd
+
+from config import (
+    CRIME_PERCENTILE_CUTOFF,
+    MAX_COMMUTE_MILES,
+    MAX_COMMUTE_MINS,
+    THRESHOLDS,
+    YIELD_CAP,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def compute_rent_to_price(df: pd.DataFrame) -> pd.DataFrame:
-    """Gross rent yield — annualized rent divided by home value."""
+    """
+    Room-hack gross yield: annualized room rental income ÷ home value.
+
+    When est_room_rent and avg_renter_bedrooms are available (post-merge):
+        rooms_rented = avg_renter_bedrooms − 1  (you occupy 1 room, rent the rest)
+                       clipped to [2, ∞) — practical minimum for a viable house hack
+        rent_to_price = est_room_rent × rooms_rented × 12 / median_home_value
+
+    avg_renter_bedrooms is the Census B25042-derived weighted average bedrooms per
+    renter-occupied unit (~2.3–2.8 for SA), giving est_room_rent ≈ $550–650/room.
+    This reflects the income you actually capture in room-hack mode.
+
+    Fallback (no est_room_rent): ZORI-based yield (median_rent × 12 / home_value).
+    """
     df = df.copy()
-    df["rent_to_price"] = (df["median_rent"] * 12) / df["median_home_value"]
+    if "est_room_rent" in df.columns and "avg_renter_bedrooms" in df.columns:
+        # Occupy 1 room, rent the rest; floor at 2 for a viable house hack
+        rooms_rented = (df["avg_renter_bedrooms"] - 1).clip(lower=2)
+        room_hack_yield = (df["est_room_rent"] * rooms_rented * 12) / df[
+            "median_home_value"
+        ]
+        zori_yield = (df["median_rent"] * 12) / df["median_home_value"]
+        # Use room-hack yield where data is present; ZORI fallback for sparse ZIPs
+        has_room_data = df["est_room_rent"].notna() & df["avg_renter_bedrooms"].notna()
+        df["rent_to_price"] = room_hack_yield.where(has_room_data, other=zori_yield)
+        n_room = has_room_data.sum()
+        n_zori = (~has_room_data).sum()
+        logger.info(
+            f"rent_to_price: room-hack formula for {n_room} ZIPs, "
+            f"ZORI fallback for {n_zori} ZIPs | "
+            f"range: {df['rent_to_price'].min():.3f} – {df['rent_to_price'].max():.3f}"
+        )
+    else:
+        df["rent_to_price"] = (df["median_rent"] * 12) / df["median_home_value"]
+        logger.warning(
+            "est_room_rent not found — rent_to_price using ZORI fallback. "
+            "Re-run pipeline to generate est_room_rent from Census B25042 data."
+        )
     return df
 
 
@@ -41,10 +83,10 @@ def apply_hard_filters(df: pd.DataFrame) -> pd.DataFrame:
     initial = len(df)
 
     filters = {
-        "min_rent_to_price":  df["rent_to_price"]      >= THRESHOLDS["min_rent_to_price"],
-        "max_home_value":     df["median_home_value"]   <= THRESHOLDS["max_home_value"],
-        "min_owner_occ":      df["owner_occ_pct"]       >= THRESHOLDS["min_owner_occ_pct"],
-        "max_owner_occ":      df["owner_occ_pct"]       <= THRESHOLDS["max_owner_occ_pct"],
+        "min_rent_to_price": df["rent_to_price"] >= THRESHOLDS["min_rent_to_price"],
+        "max_home_value": df["median_home_value"] <= THRESHOLDS["max_home_value"],
+        "min_owner_occ": df["owner_occ_pct"] >= THRESHOLDS["min_owner_occ_pct"],
+        "max_owner_occ": df["owner_occ_pct"] <= THRESHOLDS["max_owner_occ_pct"],
     }
 
     # Commute hard filter — 66-minute commute ZIPs should not appear in results at all.
@@ -184,10 +226,10 @@ def normalize_features(df: pd.DataFrame) -> pd.DataFrame:
         normalized = (series - mn) / (mx - mn)
         return 1 - normalized if invert else normalized
 
-    df["score_rent_to_price"]   = minmax(df["rent_to_price_capped"])
-    df["score_crime"]           = minmax(df["crime_log"],       invert=True)
+    df["score_rent_to_price"] = minmax(df["rent_to_price_capped"])
+    df["score_crime"] = minmax(df["crime_log"], invert=True)
     df["score_owner_occupancy"] = minmax(df["owner_occ_pct"])
-    df["score_commute"]         = minmax(df["commute_minutes"], invert=True)
+    df["score_commute"] = minmax(df["commute_minutes"], invert=True)
 
     # Stability score — only if ZHVI CoV data was merged in
     if "zhvi_cov" in df.columns:

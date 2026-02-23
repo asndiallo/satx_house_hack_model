@@ -40,11 +40,16 @@ MAX_COMMUTE_MINS = 35
 #   - Stability added (3-year hold = price volatility is real risk)
 #   - Commute reduced slightly (still important, but safety/stability outrank it)
 #
+# SFR room-hack shift (2026 update):
+#   - Owner-occupancy raised to 0.25 — when tenants share your home, neighborhood
+#     character matters even more than in a standard duplex setup.
+#   - Yield lowered to 0.20 — per-room yield signal; SFR data coverage is wider.
+#
 # Run: python sensitivity.py to verify rankings hold across weight perturbations.
 WEIGHTS = {
-    "rent_to_price": 0.25,  # viability, not maximization
+    "rent_to_price": 0.20,  # per-room yield signal; viability, not maximization
     "crime": 0.30,  # non-negotiable — you live there
-    "owner_occupancy": 0.20,  # neighborhood stability proxy
+    "owner_occupancy": 0.25,  # raised: tenants share your home, neighbors matter more
     "commute": 0.15,  # important but not override-level
     "stability": 0.10,  # 3-year price stability (ZHVI CoV)
 }
@@ -54,15 +59,15 @@ assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 # Anything here is a SCREEN, not a scored dimension.
 # Path B principle: if you won't compromise on it, make it a filter.
 THRESHOLDS = {
-    # Derived from SA cashflow math — revised for 2026 market conditions:
-    # VA loan 0% down, 6.5% rate, $250k home ~ $1,580/month PITI
-    # Need ~$1,800/month rent to cover PITI + 5% vacancy + 8% maintenance reserve
-    # BUT: SA median home values have risen ~30% since 2022 without proportional rent growth.
-    # At $300k (more realistic 2026 SA median), break-even is ~$2,160/month rent —
-    # which most SA ZIPs cannot support. 0.065 reflects current market reality
-    # while still excluding ZIPs that genuinely don't cashflow on a VA loan.
+    # Revised for SFR room-hack model (2026):
+    # Annual income = est_room_rent × rooms_rented × 12 (not ZORI × units × 12).
+    # Assumption: 3-bed SFR, 2 rooms rented. At $250k, need ~$575/room to clear 5.5%.
+    # SA room rents run $600–900/room in viable ZIPs — 5.5% is a conservative floor.
+    # ZORI-based yield (used as pipeline proxy) is typically 6–9% for SA SFRs,
+    # so the 5.5% floor is permissive enough to let SFR ZIPs through while still
+    # excluding ZIPs with genuinely weak rent fundamentals.
     # Revisit this annually as rates and prices shift.
-    "min_rent_to_price": 0.065,
+    "min_rent_to_price": 0.055,
     # SA 2026 conforming VA loan limit — adjust if your COE differs
     "max_home_value": 450_000,
     # Tightened from 0.40: below 50% = neighborhood is primarily transient renters
@@ -107,6 +112,25 @@ MIN_POPULATION_FOR_CRIME = 5_000
 # neighborhoods like 78233 (252/1k, close to top-ranked 78239/78109) in the pool.
 # Tighten to 150/1k once ground-truthing confirms which ZIPs are actually livable.
 MAX_CRIME_PER_1K = 300
+
+# ZIPs excluded from crime normalization because they are NOT primarily served
+# by SAPD. The SAPD Calls for Service dataset only contains San Antonio PD
+# dispatches — ZIPs policed by other departments will show artificially low
+# crime rates, which corrupts the percentile distribution and misleads the model.
+#
+# Known non-SAPD coverage ZIPs (verify before adding more):
+#   78154 — Schertz/Selma area. Straddles the Bexar/Guadalupe county line.
+#            Served by Schertz PD, Cibolo PD, and Guadalupe County SO — none
+#            of which appear in SAPD data. Crime rate of 6.6/1k is a SAPD artifact,
+#            not a true measure of public safety in this ZIP.
+#
+# These ZIPs are dropped from crime processing (same mechanism as military ZIPs).
+# Without crime data they are dropped by the inner join in merge_datasets and
+# do not appear in ranked output — which is the correct behavior since their
+# crime signal is unreliable.
+NON_SAPD_ZIPS = {
+    "78154",  # Schertz/Selma — Schertz PD / Guadalupe County SO jurisdiction
+}
 
 # Allowlist of SA CFS Problem types that represent actual criminal incidents.
 # Excludes medical emergencies, welfare checks, noise, traffic — activity, not crime.
@@ -241,6 +265,17 @@ CENSUS_TABLES = {
     "total_housing": "B25003_001E",
     "median_hh_income": "B19013_001E",
     "population": "B01003_001E",
+    # B25042: Tenure by bedrooms — renter-occupied units by bedroom count.
+    # Used to compute avg_renter_bedrooms per ZIP, which is the correct denominator
+    # for est_room_rent = ZORI / avg_renter_bedrooms.
+    # B25018 (median rooms) was incorrect: total rooms (~5.5) ≠ bedrooms (~2.5).
+    "renter_total": "B25042_001E",  # total renter-occupied units
+    "renter_0bed": "B25042_002E",  # no bedroom (studio)
+    "renter_1bed": "B25042_003E",
+    "renter_2bed": "B25042_004E",
+    "renter_3bed": "B25042_005E",
+    "renter_4bed": "B25042_006E",
+    "renter_5bed": "B25042_007E",  # 5+ bedrooms
 }
 CENSUS_BASE_URL = "https://api.census.gov/data"
 
