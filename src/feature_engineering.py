@@ -17,6 +17,7 @@ from config import (
     CRIME_PERCENTILE_CUTOFF,
     MAX_COMMUTE_MILES,
     MAX_COMMUTE_MINS,
+    TARGET_ROOMS_RENTED,
     THRESHOLDS,
     YIELD_CAP,
 )
@@ -28,27 +29,28 @@ def compute_rent_to_price(df: pd.DataFrame) -> pd.DataFrame:
     """
     Room-hack gross yield: annualized room rental income ÷ home value.
 
-    When est_room_rent and avg_renter_bedrooms are available (post-merge):
-        rooms_rented = avg_renter_bedrooms − 1  (you occupy 1 room, rent the rest)
-                       clipped to [2, ∞) — practical minimum for a viable house hack
-        rent_to_price = est_room_rent × rooms_rented × 12 / median_home_value
+    When est_room_rent is available (post-merge):
+        rent_to_price = est_room_rent × TARGET_ROOMS_RENTED × 12 / median_home_value
 
-    avg_renter_bedrooms is the Census B25042-derived weighted average bedrooms per
-    renter-occupied unit (~2.3–2.8 for SA), giving est_room_rent ≈ $550–650/room.
-    This reflects the income you actually capture in room-hack mode.
+    est_room_rent = ZORI / TARGET_BEDROOMS (3-bed SFR assumption, set in config).
+    rooms_rented = TARGET_ROOMS_RENTED (2) — a model constant, not Census-derived.
+
+    Using Census avg_renter_bedrooms (~2.3–2.8) as both the est_room_rent denominator
+    and the rooms_rented multiplier caused them to partially cancel, collapsing yield
+    to ZORI × (2/avg_bed) — a constant ~17% discount with cross-ZIP noise but no
+    new signal. Fixed constants decouple yield from the Census bedroom distribution
+    of renters (which is irrelevant for a 3-bed SFR purchase decision).
 
     Fallback (no est_room_rent): ZORI-based yield (median_rent × 12 / home_value).
     """
     df = df.copy()
-    if "est_room_rent" in df.columns and "avg_renter_bedrooms" in df.columns:
-        # Occupy 1 room, rent the rest; floor at 2 for a viable house hack
-        rooms_rented = (df["avg_renter_bedrooms"] - 1).clip(lower=2)
-        room_hack_yield = (df["est_room_rent"] * rooms_rented * 12) / df[
+    if "est_room_rent" in df.columns:
+        room_hack_yield = (df["est_room_rent"] * TARGET_ROOMS_RENTED * 12) / df[
             "median_home_value"
         ]
         zori_yield = (df["median_rent"] * 12) / df["median_home_value"]
         # Use room-hack yield where data is present; ZORI fallback for sparse ZIPs
-        has_room_data = df["est_room_rent"].notna() & df["avg_renter_bedrooms"].notna()
+        has_room_data = df["est_room_rent"].notna()
         df["rent_to_price"] = room_hack_yield.where(has_room_data, other=zori_yield)
         n_room = has_room_data.sum()
         n_zori = (~has_room_data).sum()
@@ -207,7 +209,8 @@ def normalize_features(df: pd.DataFrame) -> pd.DataFrame:
     Crime is scored from crime_log — run apply_log_crime_transform first.
     Stability (zhvi_cov) is inverted — lower CoV = more stable = better score.
 
-    NOTE: all scores are relative to your current ZIP pool, not absolute.
+    NOTE: crime/owner-occ/commute/stability are relative to the surviving ZIP pool.
+    Yield is anchored to config floor/cap (absolute) — stable across pipeline runs.
     """
     df = df.copy()
 
@@ -226,7 +229,16 @@ def normalize_features(df: pd.DataFrame) -> pd.DataFrame:
         normalized = (series - mn) / (mx - mn)
         return 1 - normalized if invert else normalized
 
-    df["score_rent_to_price"] = minmax(df["rent_to_price_capped"])
+    # Yield is normalized against config floor/cap, not pool min/max.
+    # Pool min-max causes ZIPs near the floor to score ~0 (floor ≈ pool min → near-zero
+    # numerator). Anchoring to config constants gives the same score regardless of which
+    # other ZIPs survive the filter, and preserves meaningful differentiation:
+    #   floor (0.045) → 0.0   |   8% yield → 0.40   |   cap (0.12) → 1.0
+    _yield_floor = THRESHOLDS["min_rent_to_price"]
+    _yield_range = YIELD_CAP - _yield_floor
+    df["score_rent_to_price"] = (
+        (df["rent_to_price_capped"] - _yield_floor) / _yield_range
+    ).clip(0, 1)
     df["score_crime"] = minmax(df["crime_log"], invert=True)
     df["score_owner_occupancy"] = minmax(df["owner_occ_pct"])
     df["score_commute"] = minmax(df["commute_minutes"], invert=True)

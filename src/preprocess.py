@@ -13,10 +13,12 @@ import pandas as pd
 from config import (
     MIN_POPULATION_FOR_CRIME,
     NON_SAPD_ZIPS,
+    TARGET_BEDROOMS,
     TARGET_METRO,
     VIOLENT_CRIME_PROBLEMS,
     ZHVI_CAGR_WINDOWS,
     ZHVI_STABILITY_YEARS,
+    ZORI_3BR_PREMIUM,
 )
 
 logger = logging.getLogger(__name__)
@@ -395,17 +397,18 @@ def merge_datasets(
     if "population" in base.columns:
         base = base.drop(columns=["population"])
 
-    # Per-room rent estimate: ZORI ÷ avg_renter_bedrooms (from B25042).
-    # avg_renter_bedrooms is the Census-derived weighted average bedrooms per
-    # renter-occupied unit (~2.3–2.8 for SA). This is the correct denominator
-    # for per-room rate. B25018 (median rooms ~5.5) was wrong — it counts all
-    # rooms (kitchen, living, etc.), not just bedrooms.
-    # Used by property_analyzer as a fallback when --rent-override is not provided.
-    if "median_rent" in base.columns and "avg_renter_bedrooms" in base.columns:
-        valid = base["avg_renter_bedrooms"].gt(0) & base["avg_renter_bedrooms"].notna()
+    # Per-room rent estimate: (ZORI × ZORI_3BR_PREMIUM) ÷ TARGET_BEDROOMS.
+    # ZORI is the median across all unit sizes — mostly 1–2BR in SA. A 3BR room hack
+    # operates in the 3BR market, which commands a premium over the blended median.
+    # Calibration (78239, Feb 2026): ZORI=$1,446, 3BR market=$2,168, ratio=1.50.
+    # ZORI_3BR_PREMIUM=1.40 (conservative) → est_room_rent ≈ $675, matching
+    # observed SA room-for-rent listings ($650–$800). Tune in config as comps change.
+    # Use --rent-override with actual listings for specific property analysis.
+    if "median_rent" in base.columns:
+        valid = base["median_rent"].notna() & base["median_rent"].gt(0)
         base["est_room_rent"] = None
         base.loc[valid, "est_room_rent"] = (
-            base.loc[valid, "median_rent"] / base.loc[valid, "avg_renter_bedrooms"]
+            base.loc[valid, "median_rent"] * ZORI_3BR_PREMIUM / TARGET_BEDROOMS
         )
         n_filled = base["est_room_rent"].notna().sum()
         if n_filled > 0:
@@ -415,9 +418,7 @@ def merge_datasets(
                 f"range: ${rr.min():.0f} – ${rr.max():.0f} | median: ${rr.median():.0f}"
             )
     else:
-        logger.warning(
-            "Cannot compute est_room_rent — median_rent or avg_renter_bedrooms missing"
-        )
+        logger.warning("Cannot compute est_room_rent — median_rent missing")
 
     logger.info(f"Merged dataset: {len(base)} ZIPs")
     return base

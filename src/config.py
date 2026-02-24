@@ -32,6 +32,26 @@ TARGET_METRO = "San Antonio"
 MAX_COMMUTE_MILES = 25
 MAX_COMMUTE_MINS = 35
 
+# ── Target Property Assumptions (room-hack yield formula) ────────────────────
+# These drive est_room_rent (preprocess.py) and rooms_rented (feature_engineering.py).
+# Using fixed model constants rather than Census avg_renter_bedrooms because:
+#   - avg_renter_bedrooms (2.3–2.8) reflects all rental units, not 3-bed SFRs
+#   - Using it as both est_room_rent denominator and rooms_rented multiplier causes
+#     them to partially cancel, reducing yield to ZORI × (2/avg_bed) with cross-ZIP noise
+#   - A 3-bed SFR is the actual target; that's the right denominator for per-room rate
+TARGET_BEDROOMS = 3  # bedrooms in target SFR (denominator for per-room rate)
+TARGET_ROOMS_RENTED = 2  # rooms rented while occupying 1
+
+# ZORI measures the median across all unit sizes (~70% are 1–2BR in SA).
+# For a 3BR purchase, the relevant rent is the 3BR market rate, which commands
+# a premium over the blended median. Calibration from 78239 (Feb 2026):
+#   ZORI = $1,446  |  3BR market rent = $2,168  |  ratio = 1.50
+# Room-for-rent listings in SA cluster at $650–$800/room.
+# Without the multiplier: est_room_rent = $1,446 / 3 = $482  (too low)
+# With 1.40×:             est_room_rent = $1,446 × 1.40 / 3 = $675  (in range)
+# 1.40 is conservative (lower bound of observed room rents). Tune with real comps.
+ZORI_3BR_PREMIUM = 1.40
+
 # ── Scoring Weights (must sum to 1.0) ─────────────────────────────────────────
 # These encode your priorities AS A MILITARY HOUSE HACKER, not a pure investor.
 # Key shifts vs Path A investor logic:
@@ -59,15 +79,15 @@ assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 # Anything here is a SCREEN, not a scored dimension.
 # Path B principle: if you won't compromise on it, make it a filter.
 THRESHOLDS = {
-    # Revised for SFR room-hack model (2026):
-    # Annual income = est_room_rent × rooms_rented × 12 (not ZORI × units × 12).
-    # Assumption: 3-bed SFR, 2 rooms rented. At $250k, need ~$575/room to clear 5.5%.
-    # SA room rents run $600–900/room in viable ZIPs — 5.5% is a conservative floor.
-    # ZORI-based yield (used as pipeline proxy) is typically 6–9% for SA SFRs,
-    # so the 5.5% floor is permissive enough to let SFR ZIPs through while still
-    # excluding ZIPs with genuinely weak rent fundamentals.
-    # Revisit this annually as rates and prices shift.
-    "min_rent_to_price": 0.055,
+    # Recalibrated for TARGET_BEDROOMS=3 formula (2026):
+    # est_room_rent = ZORI / TARGET_BEDROOMS (not ZORI / avg_renter_bedrooms).
+    # At SA median ZORI ≈ $1,446 and median home $265k:
+    #   yield = ($1,446 / 3) × 2 × 12 / $265k = $11,568 / $265k ≈ 4.4%
+    # Floor of 4.5% filters ZIPs with genuinely weak ZORI fundamentals.
+    # (Was 5.5% under the avg_renter_bedrooms formula; 0.055 × 3/avg_bed ≈ 0.045
+    # preserves approximately the same pass/fail boundary.)
+    # Revisit annually as rates and prices shift.
+    "min_rent_to_price": 0.045,
     # SA 2026 conforming VA loan limit — adjust if your COE differs
     "max_home_value": 450_000,
     # Tightened from 0.40: below 50% = neighborhood is primarily transient renters
