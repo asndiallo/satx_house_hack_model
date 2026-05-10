@@ -128,22 +128,17 @@ CRIME_PERCENTILE_CUTOFF = 0.45
 # that its crime rate has no predictive value for where you'll actually live.
 MIN_POPULATION_FOR_CRIME = 5_000
 
-# Absolute crime ceiling — applied BEFORE the percentile floor.
-# The percentile floor is relative and can be corrupted by outliers in a small pool.
-# This absolute cap ensures ZIPs with clearly unlivable crime rates are removed
-# regardless of how the rest of the pool distributes.
+# DATA_SUSPECT threshold for crime_flag (informational — does not remove ZIPs).
+# ZIPs above this threshold get flagged as DATA_SUSPECT rather than LOW/ELEVATED/HIGH.
 #
-# 150/1k context (SA-specific):
-#   Quiet suburban: 10–40/1k
-#   Moderate: 40–100/1k
-#   High but livable: 100–150/1k
-#   Avoid: > 150/1k
-#
-# Starting at 300/1k to stay permissive while data is still being validated.
-# This removes clearly non-residential outlier ZIPs while keeping borderline
-# neighborhoods like 78233 (252/1k, close to top-ranked 78239/78109) in the pool.
-# Tighten to 150/1k once ground-truthing confirms which ZIPs are actually livable.
-MAX_CRIME_PER_1K = 300
+# SA CFS methodology context: SAPD data counts dispatch calls (not incidents) divided
+# by residential population. Commercial corridors and mixed-use ZIPs inflate rates
+# because their denominator (Census residential population) is far smaller than their
+# actual daytime/activity footprint. The median SA ZIP is ~370/1k; the 90th percentile
+# is ~750/1k. Values above 700 are likely artifacts of this denominator mismatch, not
+# genuinely unlivable neighborhoods. Ground-truth: 78227 (~580/1k) is a normal
+# residential neighborhood per direct observation.
+MAX_CRIME_PER_1K = 700
 
 # ZIPs excluded from crime normalization because they are NOT primarily served
 # by SAPD. The SAPD Calls for Service dataset only contains San Antonio PD

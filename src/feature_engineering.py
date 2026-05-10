@@ -78,8 +78,8 @@ def apply_hard_filters(df: pd.DataFrame) -> pd.DataFrame:
     - owner-occ range: neighborhood character screen
     - income floor: tenant base quality — this is structural risk, not bias
 
-    Crime is handled separately by apply_crime_floor() — it uses a percentile
-    cutoff so it adapts to the actual distribution rather than an absolute number.
+    Crime is handled separately by flag_crime_risk() — it labels ZIPs LOW/ELEVATED/HIGH/DATA_SUSPECT
+    rather than removing them, since SA CFS data quality is unreliable for hard cutoffs.
     """
     df = df.copy()
     initial = len(df)
