@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SATX House Hack — ZIP Rankings</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+
+    /* Table */
+    th { cursor: pointer; user-select: none; white-space: nowrap; }
+    th:hover { background: #1e3a5f; }
+    th.asc::after  { content: ' ↑'; opacity: 0.6; }
+    th.desc::after { content: ' ↓'; opacity: 0.6; }
+    tr.highlighted td { background: #163352 !important; outline: 1px solid #38bdf8; }
+    tr[data-zip]:hover td { background: #0f2844; cursor: pointer; }
+
+    /* Score bar */
+    .score-bar { height: 6px; border-radius: 3px; display: flex; overflow: hidden; gap: 1px; }
+    .score-bar span { border-radius: 2px; }
+
+    /* Map */
+    #map { height: 560px; border-radius: 8px; z-index: 0; }
+    .leaflet-popup-content-wrapper { background: #0d1f35; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; }
+    .leaflet-popup-tip { background: #0d1f35; }
+    .leaflet-popup-content { margin: 12px 16px; }
+    .popup-link { color: #60a5fa; text-decoration: none; }
+    .popup-link:hover { text-decoration: underline; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #0d1f35; }
+    ::-webkit-scrollbar-thumb { background: #2563eb44; border-radius: 3px; }
+
+    /* Fade in */
+    .fade-in { animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+    /* Legend */
+    .map-legend { background: #0d1f35cc; border: 1px solid #334155; border-radius: 6px; padding: 8px 12px; line-height: 1.6; }
+    .map-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  </style>
+</head>
+
+<body class="bg-[#0a1929] text-slate-200 min-h-screen">
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<header class="border-b border-slate-700/50 px-6 py-4 flex items-center justify-between">
+  <div>
+    <h1 class="text-lg font-bold text-white tracking-tight">SATX House Hack</h1>
+    <p class="text-xs text-slate-400 mt-0.5">Path B · BAMC duty station · 3-year hold</p>
+  </div>
+  <button id="btn-refresh"
+    class="text-xs px-3 py-1.5 rounded border border-slate-600 text-slate-300
+           hover:border-sky-500 hover:text-sky-400 transition-colors flex items-center gap-1.5">
+    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+      <path stroke-linecap="round" stroke-linejoin="round"
+        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0
+           0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+    </svg>
+    Re-run pipeline
+  </button>
+</header>
+
+<!-- ── Stats bar ─────────────────────────────────────────────────────────── -->
+<div id="stats-bar" class="px-6 pt-4 pb-2 grid grid-cols-2 sm:grid-cols-4 gap-3"></div>
+
+<!-- ── Tabs ──────────────────────────────────────────────────────────────── -->
+<div class="px-6 pt-2 flex items-center gap-1 border-b border-slate-700/50">
+  <button id="tab-table" data-view="table"
+    class="tab px-4 py-2 text-sm font-medium border-b-2 border-sky-500 text-sky-300 -mb-px transition-colors">
+    Table
+  </button>
+  <button id="tab-map" data-view="map"
+    class="tab px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 -mb-px hover:text-slate-200 transition-colors">
+    Map
+  </button>
+</div>
+
+<!-- ── Table view ────────────────────────────────────────────────────────── -->
+<div id="view-table" class="fade-in">
+  <div class="px-6 py-3 flex flex-wrap gap-3 items-center">
+    <div class="flex gap-1 text-xs">
+      <span class="text-slate-400 mr-1 self-center">Crime:</span>
+      <button data-filter="" class="crime-filter active px-2 py-1 rounded border border-sky-600 text-sky-300">All</button>
+      <button data-filter="LOW"          class="crime-filter px-2 py-1 rounded border border-slate-700 text-slate-400">Low</button>
+      <button data-filter="ELEVATED"     class="crime-filter px-2 py-1 rounded border border-slate-700 text-slate-400">Elevated</button>
+      <button data-filter="HIGH"         class="crime-filter px-2 py-1 rounded border border-slate-700 text-slate-400">High</button>
+      <button data-filter="DATA_SUSPECT" class="crime-filter px-2 py-1 rounded border border-slate-700 text-slate-400">Suspect</button>
+    </div>
+    <span id="row-count" class="ml-auto text-xs text-slate-500"></span>
+  </div>
+
+  <div class="px-4 pb-6 overflow-x-auto">
+    <table class="w-full text-xs border-separate border-spacing-0">
+      <thead>
+        <tr class="text-slate-400 bg-[#0d1f35] text-left select-none">
+          <th class="px-3 py-2.5 rounded-tl-lg" data-col="rank">#</th>
+          <th class="px-3 py-2.5" data-col="zip">ZIP</th>
+          <th class="px-3 py-2.5" data-col="place_name">Area</th>
+          <th class="px-3 py-2.5" data-col="median_home_value">Home Value</th>
+          <th class="px-3 py-2.5" data-col="rent_to_price">Yield</th>
+          <th class="px-3 py-2.5" data-col="commute_minutes">Drive</th>
+          <th class="px-3 py-2.5" data-col="crime_per_1k">Crime/1k</th>
+          <th class="px-3 py-2.5" data-col="owner_occ_pct">Own%</th>
+          <th class="px-3 py-2.5" data-col="zhvi_cagr_5yr">5yr CAGR</th>
+          <th class="px-3 py-2.5" data-col="median_hh_income">HH Income</th>
+          <th class="px-3 py-2.5 rounded-tr-lg" data-col="final_score">Score</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div id="loading" class="text-center text-slate-500 py-12 text-sm">Loading…</div>
+    <div id="error"   class="hidden text-center text-red-400 py-12 text-sm"></div>
+  </div>
+
+  <div class="px-6 pb-5 flex flex-wrap gap-4 text-xs text-slate-500">
+    <span class="font-medium text-slate-400">Score:</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-red-500 mr-1"></span>Crime 30%</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-emerald-500 mr-1"></span>Yield 25%</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-blue-500 mr-1"></span>Owner-occ 20%</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1"></span>Commute 15%</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-purple-500 mr-1"></span>Stability 10%</span>
+    <span class="ml-auto text-slate-600">Click any row to locate on map ↗</span>
+  </div>
+</div>
+
+<!-- ── Map view ──────────────────────────────────────────────────────────── -->
+<div id="view-map" class="hidden px-4 pt-3 pb-6 fade-in">
+  <div class="flex flex-wrap gap-2 mb-3 items-center">
+    <span class="text-xs text-slate-400">Color by:</span>
+    <div class="flex gap-1 text-xs">
+      <button data-metric="final_score"      class="metric-btn active px-2 py-1 rounded border border-sky-600 text-sky-300">Score</button>
+      <button data-metric="crime_per_1k"     class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Crime</button>
+      <button data-metric="rent_to_price"    class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Yield</button>
+      <button data-metric="commute_minutes"  class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Drive</button>
+    </div>
+    <span id="map-status" class="ml-auto text-xs text-slate-500"></span>
+  </div>
+  <div id="map"></div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+let allRows      = [];
+let sortCol      = 'rank';
+let sortAsc      = true;
+let crimeFilter  = '';
+let activeMetric = 'final_score';
+let leafletMap   = null;
+let mapReady     = false;
+let zipToLayer   = {};   // zip → Leaflet layer (for table→map sync)
+let zipToRow     = {};   // zip → <tr> element (for map→table sync)
+
+// ── Formatters ───────────────────────────────────────────────────────────────
+const fmt = {
+  usd:   v => v == null ? '—' : '$' + Math.round(v).toLocaleString(),
+  pct:   v => v == null ? '—' : (v * 100).toFixed(1) + '%',
+  cagr:  v => v == null ? '—' : (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%',
+  min:   v => v == null ? '—' : Math.round(v) + ' min',
+  score: v => v == null ? '—' : v.toFixed(3),
+  crime: v => v == null ? '—' : Math.round(v).toLocaleString(),
+};
+
+// ── Color scales ─────────────────────────────────────────────────────────────
+const CRIME_STYLE = {
+  LOW:          { bg: 'bg-emerald-900/60', text: 'text-emerald-400', border: 'border-emerald-700/40' },
+  ELEVATED:     { bg: 'bg-amber-900/60',   text: 'text-amber-400',   border: 'border-amber-700/40'   },
+  HIGH:         { bg: 'bg-orange-900/60',  text: 'text-orange-400',  border: 'border-orange-700/40'  },
+  DATA_SUSPECT: { bg: 'bg-red-900/60',     text: 'text-red-400',     border: 'border-red-700/40'     },
+};
+
+const METRIC_COLOR = {
+  final_score:     v => !v ? '#374151' : v >= 0.7 ? '#059669' : v >= 0.55 ? '#34d399' : v >= 0.45 ? '#f59e0b' : v >= 0.35 ? '#f97316' : '#ef4444',
+  crime_per_1k:    v => !v ? '#374151' : v <= 100 ? '#059669' : v <= 300 ? '#34d399' : v <= 500 ? '#f59e0b' : v <= 700 ? '#f97316' : '#ef4444',
+  rent_to_price:   v => !v ? '#374151' : v >= 0.10 ? '#059669' : v >= 0.08 ? '#34d399' : v >= 0.06 ? '#f59e0b' : v >= 0.045 ? '#f97316' : '#ef4444',
+  commute_minutes: v => !v ? '#374151' : v <= 20 ? '#059669' : v <= 30 ? '#34d399' : v <= 45 ? '#f59e0b' : v <= 60 ? '#f97316' : '#ef4444',
+};
+
+const METRIC_LEGEND = {
+  final_score:     [['#ef4444','< 0.35'],['#f97316','0.35–0.45'],['#f59e0b','0.45–0.55'],['#34d399','0.55–0.70'],['#059669','≥ 0.70']],
+  crime_per_1k:    [['#059669','≤ 100'],['#34d399','100–300'],['#f59e0b','300–500'],['#f97316','500–700'],['#ef4444','> 700']],
+  rent_to_price:   [['#ef4444','< 4.5%'],['#f97316','4.5–6%'],['#f59e0b','6–8%'],['#34d399','8–10%'],['#059669','≥ 10%']],
+  commute_minutes: [['#059669','≤ 20 min'],['#34d399','20–30'],['#f59e0b','30–45'],['#f97316','45–60'],['#ef4444','> 60']],
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function crimeBadge(flag) {
+  const s = CRIME_STYLE[flag] || CRIME_STYLE.HIGH;
+  const label = flag === 'DATA_SUSPECT' ? 'SUSPECT' : (flag || '?');
+  return `<span class="px-1.5 py-0.5 rounded text-[10px] font-medium border ${s.bg} ${s.text} ${s.border}">${label}</span>`;
+}
+
+function cagrClass(v) {
+  return v == null ? 'text-slate-400' : v >= 0.03 ? 'text-emerald-400' : v >= 0 ? 'text-slate-300' : 'text-red-400';
+}
+
+function scoreBar(r) {
+  const total = r.final_score || 1;
+  const segs = [
+    ['bg-red-500',     r.weighted_crime           ?? 0],
+    ['bg-emerald-500', r.weighted_rent_to_price   ?? 0],
+    ['bg-blue-500',    r.weighted_owner_occupancy ?? 0],
+    ['bg-amber-500',   r.weighted_commute         ?? 0],
+    ['bg-purple-500',  r.weighted_stability       ?? 0],
+  ];
+  const bars = segs.map(([cls, w]) =>
+    `<span class="${cls}" style="width:${(w/total*100).toFixed(1)}%"></span>`
+  ).join('');
+  return `
+    <div class="flex items-center gap-2">
+      <span class="font-mono font-semibold text-white w-10">${fmt.score(r.final_score)}</span>
+      <div class="score-bar flex-1 bg-slate-700/40" style="min-width:50px">${bars}</div>
+    </div>`;
+}
+
+function popupHTML(p) {
+  const gmaps  = `https://www.google.com/maps/search/${encodeURIComponent(p.zip + ' San Antonio TX')}`;
+  const zillow = `https://www.zillow.com/homes/${p.zip}_rb/`;
+  const flagS  = CRIME_STYLE[p.crime_flag] || CRIME_STYLE.HIGH;
+  return `
+    <div style="font-family:system-ui;min-width:210px">
+      <div style="font-size:15px;font-weight:700;margin-bottom:2px">${p.zip} — ${p.place_name}</div>
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:8px">Rank #${p.rank} · Score ${fmt.score(p.final_score)}</div>
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+        <tr><td style="color:#94a3b8;padding:2px 0">Yield</td>
+            <td style="font-weight:600;color:${p.rent_to_price >= 0.08 ? '#34d399' : '#e2e8f0'}">${fmt.pct(p.rent_to_price)}</td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">Drive to BAMC</td>
+            <td style="color:#e2e8f0">${fmt.min(p.commute_minutes)}</td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">Crime/1k</td>
+            <td>${fmt.crime(p.crime_per_1k)} <span style="font-size:10px;padding:1px 4px;border-radius:3px;background:#1e3a5f">${p.crime_flag}</span></td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">Home value</td>
+            <td style="color:#e2e8f0">${fmt.usd(p.median_home_value)}</td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">Owner-occ</td>
+            <td style="color:#e2e8f0">${fmt.pct(p.owner_occ_pct)}</td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">HH income</td>
+            <td style="color:#e2e8f0">${fmt.usd(p.median_hh_income)}</td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">5yr CAGR</td>
+            <td style="color:${cagrClass(p.zhvi_cagr_5yr)}">${fmt.cagr(p.zhvi_cagr_5yr)}</td></tr>
+      </table>
+      <div style="margin-top:10px;display:flex;gap:10px;font-size:12px">
+        <a href="${gmaps}"  target="_blank" class="popup-link">📍 Maps</a>
+        <a href="${zillow}" target="_blank" class="popup-link">🏠 Zillow</a>
+      </div>
+    </div>`;
+}
+
+// ── Stats bar ─────────────────────────────────────────────────────────────────
+function renderStats(rows) {
+  const top = rows[0];
+  const lowCount = rows.filter(r => r.crime_flag === 'LOW').length;
+  const medVal = rows.slice().sort((a, b) => a.median_home_value - b.median_home_value)[Math.floor(rows.length / 2)];
+  document.getElementById('stats-bar').innerHTML = [
+    { label: 'ZIPs ranked',  value: rows.length },
+    { label: 'Top ZIP',      value: `${top?.zip} — ${top?.place_name}` },
+    { label: 'Top score',    value: fmt.score(top?.final_score) },
+    { label: 'LOW crime',    value: `${lowCount} / ${rows.length}` },
+  ].map(({ label, value }) => `
+    <div class="bg-[#0d1f35] rounded-lg px-4 py-3 border border-slate-700/30">
+      <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-0.5">${label}</div>
+      <div class="text-base font-bold text-white leading-tight">${value}</div>
+    </div>`).join('');
+}
+
+// ── Table rendering ───────────────────────────────────────────────────────────
+function renderTable(rows) {
+  zipToRow = {};
+  const tbody = document.getElementById('tbody');
+  document.getElementById('row-count').textContent = `${rows.length} ZIP${rows.length !== 1 ? 's' : ''}`;
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="11" class="text-center text-slate-500 py-8">No results.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map((r, i) => {
+    const bg = i % 2 === 0 ? 'bg-[#0a1929]' : 'bg-[#0b1e30]';
+    return `
+      <tr class="${bg} transition-colors" data-zip="${r.zip}">
+        <td class="px-3 py-2 font-semibold text-slate-400">${r.rank}</td>
+        <td class="px-3 py-2 font-mono font-bold text-sky-300">${r.zip}</td>
+        <td class="px-3 py-2 text-slate-300 max-w-[130px] truncate" title="${r.place_name}">${r.place_name}</td>
+        <td class="px-3 py-2">${fmt.usd(r.median_home_value)}</td>
+        <td class="px-3 py-2 font-semibold ${r.rent_to_price >= 0.08 ? 'text-emerald-400' : 'text-slate-200'}">${fmt.pct(r.rent_to_price)}</td>
+        <td class="px-3 py-2 ${r.commute_minutes <= 25 ? 'text-emerald-400' : r.commute_minutes <= 40 ? 'text-amber-400' : 'text-orange-400'}">${fmt.min(r.commute_minutes)}</td>
+        <td class="px-3 py-2">
+          <div class="flex items-center gap-1.5">
+            <span class="text-slate-300">${fmt.crime(r.crime_per_1k)}</span>
+            ${crimeBadge(r.crime_flag)}
+          </div>
+        </td>
+        <td class="px-3 py-2 text-slate-300">${fmt.pct(r.owner_occ_pct)}</td>
+        <td class="px-3 py-2 font-semibold ${cagrClass(r.zhvi_cagr_5yr)}">${fmt.cagr(r.zhvi_cagr_5yr)}</td>
+        <td class="px-3 py-2 text-slate-300">${fmt.usd(r.median_hh_income)}</td>
+        <td class="px-3 py-2">${scoreBar(r)}</td>
+      </tr>`;
+  }).join('');
+
+  // Register rows and click handlers
+  tbody.querySelectorAll('tr[data-zip]').forEach(tr => {
+    const zip = tr.dataset.zip;
+    zipToRow[zip] = tr;
+    tr.addEventListener('click', () => onRowClick(zip));
+  });
+
+  // Sync highlight state if a layer is already selected
+  document.querySelectorAll('tr[data-zip].highlighted').forEach(tr => tr.classList.remove('highlighted'));
+}
+
+function applyFiltersAndSort() {
+  let rows = [...allRows];
+  if (crimeFilter) rows = rows.filter(r => r.crime_flag === crimeFilter);
+  rows.sort((a, b) => {
+    const av = a[sortCol], bv = b[sortCol];
+    if (av == null && bv == null) return 0;
+    if (av == null) return sortAsc ? 1 : -1;
+    if (bv == null) return sortAsc ? -1 : 1;
+    return sortAsc ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+  });
+  renderTable(rows);
+  document.querySelectorAll('th[data-col]').forEach(th => {
+    th.classList.remove('asc', 'desc');
+    if (th.dataset.col === sortCol) th.classList.add(sortAsc ? 'asc' : 'desc');
+  });
+}
+
+// ── Map rendering ─────────────────────────────────────────────────────────────
+let geoLayer = null;
+let mapLegend = null;
+
+function initMap() {
+  leafletMap = L.map('map', { zoomControl: true }).setView([29.42, -98.49], 10);
+
+  // Dark base tiles
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_matter/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap © CARTO',
+    subdomains: 'abcd',
+    maxZoom: 19,
+  }).addTo(leafletMap);
+
+  // Census TIGERweb WMS — ZIP boundary outlines across all of Texas/US.
+  // Appears as faint gray lines at low zoom; SA GeoJSON polygons overlay on top.
+  L.tileLayer.wms(
+    'https://tigerweb.geo.census.gov/arcgis/services/TIGERweb/tigerWms_ACS2022/MapServer/WMSServer',
+    {
+      layers: 'Zip+Code+Tabulation+Areas',
+      format: 'image/png',
+      transparent: true,
+      version: '1.3.0',
+      opacity: 0.18,
+      attribution: 'US Census Bureau TIGERweb',
+    }
+  ).addTo(leafletMap);
+
+  // BAMC — Brooke Army Medical Center (the duty station this whole model targets)
+  const bamcIcon = L.divIcon({
+    className: '',
+    html: `
+      <div style="position:relative;width:44px;height:54px">
+        <svg viewBox="0 0 44 54" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:44px;height:54px;filter:drop-shadow(0 3px 6px rgba(0,0,0,.6))">
+          <path d="M22 0C10.954 0 2 8.954 2 20c0 13.5 20 34 20 34S42 33.5 42 20C42 8.954 33.046 0 22 0z" fill="#ef4444" stroke="#fff" stroke-width="2"/>
+          <circle cx="22" cy="20" r="10" fill="white"/>
+          <!-- Red cross -->
+          <rect x="19" y="13" width="6" height="14" rx="1" fill="#ef4444"/>
+          <rect x="15" y="17" width="14" height="6" rx="1" fill="#ef4444"/>
+        </svg>
+        <div style="position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);white-space:nowrap;background:#0a1929;color:#fca5a5;font-size:10px;font-weight:700;font-family:system-ui;letter-spacing:.05em;padding:2px 6px;border-radius:3px;border:1px solid #ef4444;line-height:1.4">BAMC</div>
+      </div>`,
+    iconSize:    [44, 72],
+    iconAnchor:  [22, 54],
+    popupAnchor: [0, -54],
+  });
+
+  L.marker([29.4966, -98.4309], { icon: bamcIcon, zIndexOffset: 1000 })
+    .addTo(leafletMap)
+    .bindPopup(`
+      <div style="font-family:system-ui;min-width:190px">
+        <div style="font-size:15px;font-weight:700;color:#fca5a5;margin-bottom:3px">&#10010; BAMC</div>
+        <div style="color:#cbd5e1;font-size:12px;margin-bottom:2px">Brooke Army Medical Center</div>
+        <div style="color:#94a3b8;font-size:11px">Fort Sam Houston · 78234</div>
+        <div style="margin-top:9px">
+          <a href="https://www.google.com/maps/place/Brooke+Army+Medical+Center/@29.4966,-98.4309" target="_blank" class="popup-link" style="font-size:12px">📍 Google Maps</a>
+        </div>
+      </div>`, { maxWidth: 220 })
+    .bindTooltip('<strong>BAMC</strong> — Brooke Army Medical Center', { direction: 'top' });
+
+  loadGeoLayer();
+}
+
+async function loadGeoLayer() {
+  document.getElementById('map-status').textContent = 'Loading boundaries…';
+  try {
+    const res = await fetch('/api/geojson');
+    if (!res.ok) throw new Error(await res.text());
+    const geo = await res.json();
+    document.getElementById('map-status').textContent = `${geo.features?.length ?? 0} ZIPs loaded`;
+    renderGeoLayer(geo);
+  } catch (e) {
+    document.getElementById('map-status').textContent = `Map error: ${e.message}`;
+  }
+}
+
+const UNSCORED_STYLE = {
+  fillColor:   '#1a2d3f',
+  weight:      0.7,
+  opacity:     0.5,
+  color:       '#2a3f52',
+  fillOpacity: 0.45,
+};
+
+function featureStyle(feature) {
+  if (!feature.properties._scored) return UNSCORED_STYLE;
+  return {
+    fillColor:   METRIC_COLOR[activeMetric](feature.properties[activeMetric]),
+    weight:      1.5,
+    opacity:     0.95,
+    color:       '#0ea5e9',
+    fillOpacity: 0.72,
+  };
+}
+
+function renderGeoLayer(geo) {
+  if (geoLayer) { leafletMap.removeLayer(geoLayer); geoLayer = null; }
+  zipToLayer = {};
+
+  geoLayer = L.geoJSON(geo, {
+    style: featureStyle,
+    onEachFeature: (feature, layer) => {
+      const p   = feature.properties;
+      const zip = p.zip || p.ZCTA5CE10;
+
+      if (p._scored) {
+        if (zip) zipToLayer[zip] = layer;
+        layer.bindPopup(popupHTML(p), { maxWidth: 280 });
+        layer.bindTooltip(
+          `<strong>${zip}</strong> — ${p.place_name || ''}`,
+          { sticky: true, direction: 'top' }
+        );
+        layer.on('click', () => {
+          Object.values(zipToRow).forEach(tr => tr.classList.remove('highlighted'));
+          if (zip && zipToRow[zip]) zipToRow[zip].classList.add('highlighted');
+        });
+        // Subtle highlight on hover
+        layer.on('mouseover', () => layer.setStyle({ weight: 2.5, fillOpacity: 0.85 }));
+        layer.on('mouseout',  () => geoLayer.resetStyle(layer));
+      } else {
+        layer.bindTooltip(
+          `${zip}${p.place_name ? ' — ' + p.place_name : ''} <em style="opacity:.5">(not ranked)</em>`,
+          { sticky: true, direction: 'top' }
+        );
+      }
+    },
+  }).addTo(leafletMap);
+
+  // Fit to the scored ZIPs' bounds so we center on what matters
+  const scoredLayers = [];
+  geoLayer.eachLayer(l => { if (l.feature.properties._scored) scoredLayers.push(l); });
+  if (scoredLayers.length) {
+    const group = L.featureGroup(scoredLayers);
+    try { leafletMap.fitBounds(group.getBounds(), { padding: [30, 30] }); } catch (_) {}
+  }
+
+  renderLegend();
+}
+
+function refreshMapColors() {
+  if (!geoLayer) return;
+  geoLayer.eachLayer(layer => {
+    layer.setStyle(featureStyle(layer.feature));
+  });
+  renderLegend();
+}
+
+function renderLegend() {
+  if (mapLegend) mapLegend.remove();
+  const entries = METRIC_LEGEND[activeMetric] || [];
+  mapLegend = L.control({ position: 'bottomright' });
+  mapLegend.onAdd = () => {
+    const div = L.DomUtil.create('div', 'map-legend');
+    div.style.cssText = 'background:#0d1f35cc;border:1px solid #334155;border-radius:6px;padding:8px 12px;font-size:11px;color:#cbd5e1;line-height:1.7';
+    div.innerHTML = entries.map(([color, label]) =>
+      `<div><i style="display:inline-block;width:12px;height:12px;background:${color};border-radius:2px;margin-right:6px;vertical-align:middle"></i>${label}</div>`
+    ).join('');
+    return div;
+  };
+  mapLegend.addTo(leafletMap);
+}
+
+// ── Cross-view sync ───────────────────────────────────────────────────────────
+function onRowClick(zip) {
+  // Switch to map view
+  showView('map');
+  if (!mapReady) { initMap(); mapReady = true; }
+  else { leafletMap.invalidateSize(); }
+
+  // Zoom and open popup for this ZIP
+  const layer = zipToLayer[zip];
+  if (layer) {
+    setTimeout(() => {
+      leafletMap.fitBounds(layer.getBounds(), { maxZoom: 13, padding: [40, 40] });
+      layer.openPopup();
+    }, 80);
+  }
+}
+
+// ── View toggle ───────────────────────────────────────────────────────────────
+function showView(name) {
+  document.getElementById('view-table').classList.toggle('hidden', name !== 'table');
+  document.getElementById('view-map').classList.toggle('hidden', name !== 'map');
+  document.querySelectorAll('.tab').forEach(btn => {
+    const active = btn.dataset.view === name;
+    btn.classList.toggle('border-sky-500', active);
+    btn.classList.toggle('text-sky-300', active);
+    btn.classList.toggle('border-transparent', !active);
+    btn.classList.toggle('text-slate-400', !active);
+  });
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+async function loadData() {
+  document.getElementById('loading').classList.remove('hidden');
+  document.getElementById('error').classList.add('hidden');
+  try {
+    const res = await fetch('/api/results');
+    if (!res.ok) {
+      const { detail } = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(detail);
+    }
+    allRows = await res.json();
+    document.getElementById('loading').classList.add('hidden');
+    renderStats(allRows);
+    applyFiltersAndSort();
+    // Refresh map if already visible
+    if (mapReady) renderGeoLayer(await (await fetch('/api/geojson')).json());
+  } catch (e) {
+    document.getElementById('loading').classList.add('hidden');
+    const el = document.getElementById('error');
+    el.textContent = e.message;
+    el.classList.remove('hidden');
+  }
+}
+
+// ── Event listeners ───────────────────────────────────────────────────────────
+document.querySelectorAll('th[data-col]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    sortAsc = sortCol === col ? !sortAsc : col === 'rank' || col === 'place_name';
+    sortCol = col;
+    applyFiltersAndSort();
+  });
+});
+
+document.querySelectorAll('.crime-filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    crimeFilter = btn.dataset.filter;
+    document.querySelectorAll('.crime-filter').forEach(b => {
+      const on = b === btn;
+      b.classList.toggle('border-sky-600', on);
+      b.classList.toggle('text-sky-300', on);
+      b.classList.toggle('border-slate-700', !on);
+      b.classList.toggle('text-slate-400', !on);
+    });
+    applyFiltersAndSort();
+  });
+});
+
+document.querySelectorAll('.metric-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    activeMetric = btn.dataset.metric;
+    document.querySelectorAll('.metric-btn').forEach(b => {
+      const on = b === btn;
+      b.classList.toggle('border-sky-600', on);
+      b.classList.toggle('text-sky-300', on);
+      b.classList.toggle('border-slate-700', !on);
+      b.classList.toggle('text-slate-400', !on);
+    });
+    refreshMapColors();
+  });
+});
+
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const view = btn.dataset.view;
+    showView(view);
+    if (view === 'map') {
+      if (!mapReady) { initMap(); mapReady = true; }
+      else { setTimeout(() => leafletMap.invalidateSize(), 50); }
+    }
+  });
+});
+
+document.getElementById('btn-refresh').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-refresh');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  try {
+    const res = await fetch('/api/run-pipeline', { method: 'POST' });
+    if (!res.ok) throw new Error('Pipeline failed');
+    await loadData();
+  } catch {
+    alert('Pipeline error — check terminal for details.');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Re-run pipeline`;
+  }
+});
+
+loadData();
+</script>
+</body>
+</html>

@@ -4,17 +4,27 @@ utils.py
 Shared utilities: logging setup, file I/O helpers, validation.
 """
 
+import io
 import logging
 import sys
+import zipfile
 from pathlib import Path
 import pandas as pd
+import requests
+
+from cache_manager import CacheManager
+from config import CACHE_DIR, CACHE_TTL
+
+logger = logging.getLogger(__name__)
+
+# Census ZCTA Gazetteer — free, no auth, updated annually
+_GAZETTEER_URL = (
+    "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/"
+    "2024_Gazetteer/2024_Gaz_zcta_national.zip"
+)
 
 
 def setup_logging(level: str = "INFO") -> None:
-    """
-    Configure logging to both console and file.
-    Call once at the top of main.py.
-    """
     log_format = "%(asctime)s | %(levelname)-8s | %(module)s | %(message)s"
     logging.basicConfig(
         level=getattr(logging, level.upper()),
@@ -33,9 +43,7 @@ def save_csv(df: pd.DataFrame, path: Path, description: str = "") -> None:
     df.to_csv(path, index=False)
     rows, cols = df.shape
     label = f" ({description})" if description else ""
-    logging.getLogger(__name__).info(
-        f"Saved{label}: {path.name} — {rows} rows × {cols} cols"
-    )
+    logger.info(f"Saved{label}: {path.name} — {rows} rows × {cols} cols")
 
 
 def validate_dataframe(df: pd.DataFrame, required_cols: list, name: str = "DataFrame") -> None:
@@ -51,21 +59,39 @@ def validate_dataframe(df: pd.DataFrame, required_cols: list, name: str = "DataF
 def load_zip_centroids(filepath: Path = None) -> pd.DataFrame:
     """
     Load ZIP code latitude/longitude centroids.
-    
-    Download the free tier from: https://simplemaps.com/data/us-zips
-    File: uszips.csv — contains zip, lat, lng columns.
-    This is required for commute calculations.
+
+    Fetches from the Census ZCTA Gazetteer on first run (or after TTL expiry)
+    and caches the result. No manual download required.
+    Cached for 1 year — ZIP centroids are effectively static.
     """
-    from config import DATA_RAW
-    path = filepath or DATA_RAW / "uszips.csv"
-    
-    if not path.exists():
-        raise FileNotFoundError(
-            f"ZIP centroids file not found at {path}.\n"
-            "Download free from: https://simplemaps.com/data/us-zips\n"
-            "Rename to 'uszips.csv' and place in data/raw/"
-        )
-    
-    df = pd.read_csv(path, dtype={"zip": str})
-    df["zip"] = df["zip"].str.zfill(5)
-    return df[["zip", "lat", "lng"]].rename(columns={"lat": "zip_lat", "lng": "zip_lon"})
+    if filepath is not None:
+        df = pd.read_csv(filepath, dtype={"zip": str})
+        df["zip"] = df["zip"].str.zfill(5)
+        return df[["zip", "lat", "lng"]].rename(columns={"lat": "zip_lat", "lng": "zip_lon"})
+
+    _cache = CacheManager(CACHE_DIR)
+    cached = _cache.get("uszips", ttl_hours=CACHE_TTL["uszips_hours"])
+    if cached is not None:
+        return cached
+
+    logger.info("Fetching ZIP centroids from Census ZCTA Gazetteer...")
+    resp = requests.get(_GAZETTEER_URL, timeout=60)
+    resp.raise_for_status()
+
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        txt_name = next(n for n in zf.namelist() if n.endswith(".txt"))
+        with zf.open(txt_name) as f:
+            raw = pd.read_csv(f, sep="\t", dtype={"GEOID": str})
+    raw.columns = raw.columns.str.strip()
+
+    raw["GEOID"] = raw["GEOID"].astype(str).str.zfill(5)
+    df = raw[["GEOID", "INTPTLAT", "INTPTLONG"]].rename(columns={
+        "GEOID": "zip",
+        "INTPTLAT": "zip_lat",
+        "INTPTLONG": "zip_lon",
+    })
+    df = df.dropna(subset=["zip_lat", "zip_lon"])
+    logger.info(f"ZIP centroids loaded: {len(df):,} ZCTAs")
+
+    _cache.set("uszips", df, source="load_zip_centroids")
+    return df

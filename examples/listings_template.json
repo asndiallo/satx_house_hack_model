@@ -1,0 +1,52 @@
+{
+  "_comment": "Fill this file with listings you find on Zillow, Realtor.com, etc. and run: python analyze_listings.py --file examples/listings_template.json",
+
+  "defaults": {
+    "_comment": "Values here apply to every listing unless the listing overrides them.",
+    "loan_type": "VA",
+    "bah": 1900,
+    "rate": 6.875,
+    "term": 30,
+    "va_second_use": false,
+    "hold_years": 3
+  },
+
+  "listings": [
+    {
+      "_comment": "SFR room hack — 3-bed, rent 2 rooms. Uses pipeline est_room_rent (no rent_override).",
+      "label": "123 Oak Ave (Zillow #12345678)",
+      "zip": "78239",
+      "price": 265000,
+      "units": 1,
+      "bedrooms": 3,
+      "rooms_rented": 2
+    },
+    {
+      "_comment": "SFR room hack — 4-bed, rent 3 rooms. Overrides rent with a known comp ($720/room).",
+      "label": "456 Elm St (Zillow #87654321)",
+      "zip": "78239",
+      "price": 285000,
+      "units": 1,
+      "bedrooms": 4,
+      "rooms_rented": 3,
+      "rent_override": 720
+    },
+    {
+      "_comment": "Duplex — live in one unit, rent the other. No rent_override = uses pipeline ZORI.",
+      "label": "789 Maple Dr (Realtor.com)",
+      "zip": "78209",
+      "price": 310000,
+      "units": 2
+    },
+    {
+      "_comment": "Conventional loan example (5% down). Higher yield required to offset PMI.",
+      "label": "321 Cedar Blvd",
+      "zip": "78250",
+      "price": 240000,
+      "units": 2,
+      "loan_type": "conventional",
+      "down_pct": 5,
+      "hoa": 80
+    }
+  ]
+}

@@ -3,6 +3,8 @@ data_loader.py
 --------------
 All raw data ingestion lives here.
 Each function returns a raw, unmodified DataFrame — no business logic.
+
+All fetched data lands in .cache/ — nothing writes to data/raw/.
 """
 
 import io
@@ -12,10 +14,14 @@ import pandas as pd
 from pathlib import Path
 from typing import Optional
 
+from cache_manager import CacheManager
 from config import (
-    DATA_RAW, CENSUS_BASE_URL, CENSUS_YEAR,
-    CENSUS_TABLES, TARGET_STATE_FIPS, SA_CRIME_URL
+    CACHE_DIR, CACHE_TTL,
+    CENSUS_BASE_URL, CENSUS_YEAR,
+    CENSUS_TABLES, SA_CRIME_URL
 )
+
+_cache = CacheManager(CACHE_DIR)
 
 logger = logging.getLogger(__name__)
 
@@ -32,43 +38,82 @@ _HEADERS = {
     "Referer": "https://data.sanantonio.gov/",
 }
 
+_ZILLOW_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; research/1.0)",
+}
+
+_ZHVI_URL = (
+    "https://files.zillowstatic.com/research/public_csvs/zhvi/"
+    "Zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+)
+_ZORI_URL = (
+    "https://files.zillowstatic.com/research/public_csvs/zori/"
+    "Zip_zori_uc_sfrcondomfr_sm_month.csv"
+)
+_ZHVF_URL = (
+    "https://files.zillowstatic.com/research/public_csvs/zhvf_growth/"
+    "Zip_zhvf_growth_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+)
+
 
 # ── Zillow ────────────────────────────────────────────────────────────────────
 
-def load_zhvi(filepath: Optional[Path] = None) -> pd.DataFrame:
+def load_zhvi() -> pd.DataFrame:
     """
-    Load Zillow Home Value Index (ZHVI) CSV.
-    Download manually from:
-    https://www.zillow.com/research/data/ -> 'ZHVI All Homes (SFR, Condo/Co-op)
-    Time Series, Smoothed, Seasonally Adjusted' -> ZIP code level
+    Load Zillow Home Value Index (ZHVI) from Zillow's public research endpoint.
+    Cached for 7 days — Zillow publishes monthly updates.
     """
-    path = filepath or DATA_RAW / "zillow_zhvi_zip.csv"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"ZHVI file not found at {path}.\n"
-            "Download from: https://www.zillow.com/research/data/"
-        )
-    logger.info(f"Loading ZHVI from {path}")
-    df = pd.read_csv(path, dtype={"RegionName": str})
+    cached = _cache.get("zillow_zhvi", ttl_hours=CACHE_TTL["zillow_hours"])
+    if cached is not None:
+        return cached
+
+    logger.info("Fetching ZHVI from Zillow research endpoint...")
+    resp = requests.get(_ZHVI_URL, headers=_ZILLOW_HEADERS, timeout=60)
+    resp.raise_for_status()
+    df = pd.read_csv(io.BytesIO(resp.content), dtype={"RegionName": str})
+    logger.info(f"ZHVI fetched: {len(df):,} rows")
+    _cache.set("zillow_zhvi", df, source="load_zhvi")
     return df
 
 
-def load_zori(filepath: Optional[Path] = None) -> pd.DataFrame:
+def load_zori() -> pd.DataFrame:
     """
-    Load Zillow Observed Rent Index (ZORI) CSV.
-    Download manually from:
-    https://www.zillow.com/research/data/ -> 'ZORI (Smoothed): All Homes Plus
-    Multifamily' -> ZIP code level
+    Load Zillow Observed Rent Index (ZORI) from Zillow's public research endpoint.
+    Cached for 7 days — Zillow publishes monthly updates.
     """
-    path = filepath or DATA_RAW / "zillow_zori_zip.csv"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"ZORI file not found at {path}.\n"
-            "Download from: https://www.zillow.com/research/data/"
-        )
-    logger.info(f"Loading ZORI from {path}")
-    df = pd.read_csv(path, dtype={"RegionName": str})
+    cached = _cache.get("zillow_zori", ttl_hours=CACHE_TTL["zillow_hours"])
+    if cached is not None:
+        return cached
+
+    logger.info("Fetching ZORI from Zillow research endpoint...")
+    resp = requests.get(_ZORI_URL, headers=_ZILLOW_HEADERS, timeout=60)
+    resp.raise_for_status()
+    df = pd.read_csv(io.BytesIO(resp.content), dtype={"RegionName": str})
+    logger.info(f"ZORI fetched: {len(df):,} rows")
+    _cache.set("zillow_zori", df, source="load_zori")
     return df
+
+
+def load_zhvf() -> Optional[pd.DataFrame]:
+    """
+    Load Zillow Home Value Forecast (ZHVF) from Zillow's public research endpoint.
+    Cached for 7 days. Returns None on failure — ZHVF is optional in the pipeline.
+    """
+    cached = _cache.get("zillow_zhvf", ttl_hours=CACHE_TTL["zhvf_hours"])
+    if cached is not None:
+        return cached
+
+    logger.info("Fetching ZHVF from Zillow research endpoint...")
+    try:
+        resp = requests.get(_ZHVF_URL, headers=_ZILLOW_HEADERS, timeout=60)
+        resp.raise_for_status()
+        df = pd.read_csv(io.BytesIO(resp.content), dtype={"RegionName": str})
+        logger.info(f"ZHVF fetched: {len(df):,} rows")
+        _cache.set("zillow_zhvf", df, source="load_zhvf")
+        return df
+    except Exception as exc:
+        logger.warning(f"ZHVF fetch failed (non-fatal): {exc}")
+        return None
 
 
 # ── Census ACS ────────────────────────────────────────────────────────────────
@@ -77,8 +122,12 @@ def load_census_acs() -> pd.DataFrame:
     """
     Pull owner-occupancy and income data from Census ACS 5-year API.
     Free, no API key required for basic access (<500 req/day).
-    Returns ZIP-level DataFrame.
+    Returns ZIP-level DataFrame. Cached for 30 days.
     """
+    cached = _cache.get("census_acs", ttl_hours=CACHE_TTL["census_hours"])
+    if cached is not None:
+        return cached
+
     variables = ",".join(CENSUS_TABLES.values())
     url = (
         f"{CENSUS_BASE_URL}/{CENSUS_YEAR}/acs/acs5"
@@ -105,16 +154,13 @@ def load_census_acs() -> pd.DataFrame:
     df = df[texas_mask].copy()
     logger.info(f"Filtered {before} national ZCTAs -> {len(df)} Texas ZIPs")
 
-    out_path = DATA_RAW / "census_acs_raw.csv"
-    df.to_csv(out_path, index=False)
-    logger.info(f"Census data cached to {out_path}")
-
+    _cache.set("census_acs", df, source="load_census_acs")
     return df
 
 
 # ── Crime Data ────────────────────────────────────────────────────────────────
 
-def load_crime_data(filepath: Optional[Path] = None) -> pd.DataFrame:
+def load_crime_data() -> pd.DataFrame:
     """
     Load San Antonio SAPD Calls for Service data.
 
@@ -122,15 +168,19 @@ def load_crime_data(filepath: Optional[Path] = None) -> pd.DataFrame:
     user-agent. Fix: use requests with browser-like headers and stream the
     response directly to disk (file is ~600MB -- don't load into RAM at once).
 
-    Cache behavior: if sa_crime_raw.csv already exists locally, skip download.
-    Delete the cache file to force a fresh pull.
+    Cache behavior: TTL-based — re-downloads after 7 days. The raw CSV lives
+    in .cache/; a lightweight marker tracks freshness so we don't need to
+    pickle the full file. Delete .cache/crime_raw_marker.* to force refresh.
     """
-    cache_path = filepath or DATA_RAW / "sa_crime_raw.csv"
+    cache_path = CACHE_DIR / "sa_crime_raw.csv"
 
-    # Use cache if available
-    if cache_path.exists():
-        logger.info(f"Using cached crime data: {cache_path}")
+    marker = _cache.get("crime_raw_marker", ttl_hours=CACHE_TTL["crime_hours"])
+    if marker and cache_path.exists():
+        logger.info(f"Using cached crime data (TTL fresh): {cache_path}")
         return pd.read_csv(cache_path, dtype=str)
+
+    if cache_path.exists():
+        logger.info("Crime cache TTL expired — re-downloading fresh data")
 
     logger.info("Downloading SAPD CFS data (~600MB, this will take 30-90s)...")
     logger.info(f"Source: {SA_CRIME_URL}")
@@ -167,10 +217,11 @@ def load_crime_data(filepath: Optional[Path] = None) -> pd.DataFrame:
 
     except requests.Timeout:
         raise RuntimeError(
-            "Download timed out after 120s. Try again on a faster connection,\n"
-            "or download manually and save to: {cache_path}"
+            f"Download timed out after 120s. Try again on a faster connection,\n"
+            f"or download manually and save to: {cache_path}"
         )
 
     df = pd.read_csv(cache_path, dtype=str)
     logger.info(f"Crime data loaded: {len(df):,} rows, columns: {df.columns.tolist()}")
+    _cache.set("crime_raw_marker", True, source="load_crime_data")
     return df
