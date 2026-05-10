@@ -59,13 +59,13 @@ Anything you're unwilling to compromise on becomes a **filter** that removes ZIP
 
 ZIPs that fail any of these are removed entirely and never scored:
 
-| Filter                | Threshold    | Why                                                                                                    |
-| --------------------- | ------------ | ------------------------------------------------------------------------------------------------------ |
-| Minimum gross yield   | 3.5%         | Room-hack floor: `(est_room_rent × rooms_rented × 12) / home_value`. Lowered to accommodate multifamily ZIPs where rental-dense neighborhoods are the goal. |
-| Maximum home price    | $450,000     | SA conforming VA loan limit — adjust to your COE.                                                      |
-| Owner-occupancy range | 35%–85%      | Below 35% = too transient. Above 85% = low rental demand and harder PCS exit. Floor lowered from 50% to capture rental-dense neighborhoods suited for house hacking. |
-| Minimum median income | $42,000      | Tenant base quality screen. Correlates with delinquency risk and resale strength. $42k ≈ E-5/E-6 BAH + base pay in SA. |
-| Commute to BAMC       | ≤ 35 min     | You drive this daily. ZIPs beyond this are not candidates regardless of yield. Uses real Google Maps drive time when available; falls back to straight-line Haversine. |
+| Filter                | Threshold | Why                                                                                                                                                                    |
+| --------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Minimum gross yield   | 3.5%      | Room-hack floor: `(est_room_rent × rooms_rented × 12) / home_value`. Lowered to accommodate multifamily ZIPs where rental-dense neighborhoods are the goal.            |
+| Maximum home price    | $450,000  | SA conforming VA loan limit — adjust to your COE.                                                                                                                      |
+| Owner-occupancy range | 35%–85%   | Below 35% = too transient. Above 85% = low rental demand and harder PCS exit. Floor lowered from 50% to capture rental-dense neighborhoods suited for house hacking.   |
+| Minimum median income | $42,000   | Tenant base quality screen. Correlates with delinquency risk and resale strength. $42k ≈ E-5/E-6 BAH + base pay in SA.                                                 |
+| Commute to BAMC       | ≤ 35 min  | You drive this daily. ZIPs beyond this are not candidates regardless of yield. Uses real Google Maps drive time when available; falls back to straight-line Haversine. |
 
 **Crime is flagged, not hard-filtered.** SA SAPD Calls for Service data produces heavily inflated per-1k rates in many ZIP codes (commercial corridors, mixed-use areas with small residential populations). Removing ZIPs on a percentile cutoff throws away genuinely livable neighborhoods. Instead, every surviving ZIP gets a crime flag visible in all output — so you see the risk without the model silently discarding your candidates.
 
@@ -73,13 +73,13 @@ ZIPs that fail any of these are removed entirely and never scored:
 
 Surviving ZIPs are ranked by a weighted composite of five factors:
 
-| Factor               | Weight | Role                                                                                        |
-| -------------------- | ------ | ------------------------------------------------------------------------------------------- |
-| Crime rate           | 30%    | Highest weight — neighborhood safety drives livability and tenant quality                   |
+| Factor               | Weight | Role                                                                                          |
+| -------------------- | ------ | --------------------------------------------------------------------------------------------- |
+| Crime rate           | 30%    | Highest weight — neighborhood safety drives livability and tenant quality                     |
 | Owner-occupancy rate | 25%    | Tenants share your home in a room hack — neighborhood character matters more than in a duplex |
-| Rent-to-price ratio  | 20%    | Per-room yield signal, capped at 12% (above = suspicious)                                  |
-| Commute to BAMC      | 15%    | Daily quality of life — but safety ranks above it                                           |
-| Price stability      | 10%    | 5-year ZHVI volatility — for a 3-year hold, boring beats exciting                          |
+| Rent-to-price ratio  | 20%    | Per-room yield signal, capped at 12% (above = suspicious)                                     |
+| Commute to BAMC      | 15%    | Daily quality of life — but safety ranks above it                                             |
+| Price stability      | 10%    | 5-year ZHVI volatility — for a 3-year hold, boring beats exciting                             |
 
 ---
 
@@ -150,7 +150,7 @@ Where `est_room_rent = ZORI / TARGET_BEDROOMS` (3-bed SFR assumption). `TARGET_R
 
 ## How the Final Score Is Calculated
 
-```
+```math
 Final Score = (Crime × 0.30) + (Owner Occ × 0.25) + (Yield × 0.20) + (Commute × 0.15) + (Stability × 0.10)
 ```
 
@@ -164,14 +164,14 @@ This is why you should always read the raw columns (`crime_per_1k`, `crime_flag`
 
 All data is fetched automatically on first run and cached locally. **No manual downloads required.**
 
-| Source | What It Provides | Cache TTL |
-| ------ | ---------------- | --------- |
-| Zillow ZHVI | Monthly median home values by ZIP — latest value, 5-yr stability (CoV), 5yr/10yr CAGR | 7 days |
-| Zillow ZORI | Monthly median asking rent by ZIP — used for yield scoring and `est_room_rent` | 7 days |
-| Zillow ZHVF | ZIP-level forward price forecasts (1-, 3-, 12-month) — used by notebooks | 7 days |
-| U.S. Census ACS | Owner-occupancy, household income, median rooms per unit, population by ZIP | 30 days |
-| SAPD Calls for Service | Every police dispatch call in SA with incident type and ZIP — ~631 MB | 7 days |
-| Census ZCTA Gazetteer | ZIP centroid lat/lng for commute distance calculation | 1 year |
+| Source                 | What It Provides                                                                      | Cache TTL |
+| ---------------------- | ------------------------------------------------------------------------------------- | --------- |
+| Zillow ZHVI            | Monthly median home values by ZIP — latest value, 5-yr stability (CoV), 5yr/10yr CAGR | 7 days    |
+| Zillow ZORI            | Monthly median asking rent by ZIP — used for yield scoring and `est_room_rent`        | 7 days    |
+| Zillow ZHVF            | ZIP-level forward price forecasts (1-, 3-, 12-month) — used by notebooks              | 7 days    |
+| U.S. Census ACS        | Owner-occupancy, household income, median rooms per unit, population by ZIP           | 30 days   |
+| SAPD Calls for Service | Every police dispatch call in SA with incident type and ZIP — ~631 MB                 | 7 days    |
+| Census ZCTA Gazetteer  | ZIP centroid lat/lng for commute distance calculation                                 | 1 year    |
 
 Data lands in `.cache/` as `.pkl` files with `.meta.json` TTL markers. Delete any `.cache/*.pkl` file to force a refresh of that source.
 
@@ -234,19 +234,19 @@ Then open [http://localhost:8000](http://localhost:8000).
 
 The project includes a browser-based results dashboard at `webapp/`.
 
-**Table view**
-- All ranked ZIPs with neighborhood names, home values, yield, drive time, crime flag, CAGR, and score
-- Stacked score bar shows the per-factor contribution to each ZIP's rank
-- Sortable by any column; filterable by crime flag
-- Click any row to jump to that ZIP on the map
+1. Table view
+   - All ranked ZIPs with neighborhood names, home values, yield, drive time, crime flag, CAGR, and score
+   - Stacked score bar shows the per-factor contribution to each ZIP's rank
+   - Sortable by any column; filterable by crime flag
+   - Click any row to jump to that ZIP on the map
 
-**Map view**
-- Full San Antonio metro ZIP polygons — scored ZIPs colored by metric, unscored ZIPs in dark gray for geographic context
-- Census TIGERweb WMS layer provides ZIP boundary outlines across all of Texas when zoomed out
-- BAMC marker pinned at Fort Sam Houston
-- Color-by switcher: Score / Crime / Yield / Drive time
-- Click any polygon for a popup with full stats, Google Maps link, and Zillow link
-- Hover tooltip shows ZIP + neighborhood name
+2. Map view
+   - Full San Antonio metro ZIP polygons — scored ZIPs colored by metric, unscored ZIPs in dark gray for geographic context
+   - Census TIGERweb WMS layer provides ZIP boundary outlines across all of Texas when zoomed out
+   - BAMC marker pinned at Fort Sam Houston
+   - Color-by switcher: Score / Crime / Yield / Drive time
+   - Click any polygon for a popup with full stats, Google Maps link, and Zillow link
+   - Hover tooltip shows ZIP + neighborhood name
 
 **Re-run pipeline** button triggers a fresh `main.py` run server-side and refreshes the table.
 
@@ -307,55 +307,55 @@ python analyze_property.py --zip 78239 --price 265000 --bedrooms 3 \
 
 ### What the Report Covers
 
-| Section | What It Shows |
-| ------- | ------------- |
-| **1. ZIP Market Overview** | Rank, score, median home value vs. asking, ZORI rent, commute, owner-occupancy, CAGR, ZHVF forecast |
-| **2. Crime Intelligence** | Crime type breakdown, 12-month trend vs. prior year, peak day |
-| **3. Negotiation Range** | Max price at each yield target (6.5–8%), break-even price where tenant rent covers all costs |
-| **4. Cashflow Analysis** | Phase 1 (house hack) and Phase 2 (full rental) monthly income, expenses, and net — including homestead exemption, VA fee, BAH |
-| **5. 3-Year Hold P&L** | Total return under flat, +3%, +5%, +8%/yr and ZHVF forecast appreciation scenarios |
-| **6. Sensitivity Analysis** | Phase 2 net at 5–8.5% rates; Phase 1 net across hack fraction range |
-| **7. Filter Status** | Pass/fail on every hard filter at the asking price, with the negotiation target to fix failures |
-| **8. Decision Scorecard** | Quick yes/no checklist covering filters, cashflow, return, crime trend, and ZIP rank |
+| Section                     | What It Shows                                                                                                                 |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **1. ZIP Market Overview**  | Rank, score, median home value vs. asking, ZORI rent, commute, owner-occupancy, CAGR, ZHVF forecast                           |
+| **2. Crime Intelligence**   | Crime type breakdown, 12-month trend vs. prior year, peak day                                                                 |
+| **3. Negotiation Range**    | Max price at each yield target (6.5–8%), break-even price where tenant rent covers all costs                                  |
+| **4. Cashflow Analysis**    | Phase 1 (house hack) and Phase 2 (full rental) monthly income, expenses, and net — including homestead exemption, VA fee, BAH |
+| **5. 3-Year Hold P&L**      | Total return under flat, +3%, +5%, +8%/yr and ZHVF forecast appreciation scenarios                                            |
+| **6. Sensitivity Analysis** | Phase 2 net at 5–8.5% rates; Phase 1 net across hack fraction range                                                           |
+| **7. Filter Status**        | Pass/fail on every hard filter at the asking price, with the negotiation target to fix failures                               |
+| **8. Decision Scorecard**   | Quick yes/no checklist covering filters, cashflow, return, crime trend, and ZIP rank                                          |
 
 ### Key Parameters
 
-| Flag | Default | Description |
-| ---- | ------- | ----------- |
-| `--zip` | required | 5-digit ZIP code |
-| `--price` | required | Asking price in dollars |
-| `--units` | 1 | 1=SFH (room hack), 2=duplex, 3=triplex, 4=fourplex |
-| `--bedrooms` | 3 | Total bedrooms in the property |
-| `--rooms-rented` | — | Room-hack mode: number of bedrooms to rent |
-| `--bah` | 0 | Monthly BAH — shown as offset to Phase 1 out-of-pocket cost |
-| `--rent-override` | — | Per-unit or per-room rate when you have real comps |
-| `--rate` | 6.875% | Interest rate in percent |
-| `--loan-type` | VA | `VA` or `conventional` |
-| `--down-pct` | 0 | Down payment in percent |
-| `--va-second-use` | — | 3.30% funding fee flag (vs. 2.15% first use) |
+| Flag              | Default  | Description                                                 |
+| ----------------- | -------- | ----------------------------------------------------------- |
+| `--zip`           | required | 5-digit ZIP code                                            |
+| `--price`         | required | Asking price in dollars                                     |
+| `--units`         | 1        | 1=SFH (room hack), 2=duplex, 3=triplex, 4=fourplex          |
+| `--bedrooms`      | 3        | Total bedrooms in the property                              |
+| `--rooms-rented`  | —        | Room-hack mode: number of bedrooms to rent                  |
+| `--bah`           | 0        | Monthly BAH — shown as offset to Phase 1 out-of-pocket cost |
+| `--rent-override` | —        | Per-unit or per-room rate when you have real comps          |
+| `--rate`          | 6.875%   | Interest rate in percent                                    |
+| `--loan-type`     | VA       | `VA` or `conventional`                                      |
+| `--down-pct`      | 0        | Down payment in percent                                     |
+| `--va-second-use` | —        | 3.30% funding fee flag (vs. 2.15% first use)                |
 
 ---
 
 ## Reading the Results
 
-| Column | What It Means |
-| ------ | ------------- |
-| `rank` | Overall rank. 1 = best. |
-| `zip` | ZIP code |
-| `median_home_value` | Estimated median home price (Zillow ZHVI) |
-| `median_rent` | Estimated median asking rent per unit (Zillow ZORI) |
-| `est_room_rent` | Per-room estimate (`ZORI / TARGET_BEDROOMS`) — used for room-hack yield |
-| `rent_to_price` | Gross yield (room-hack formula). Raw value, before the 12% cap. |
-| `commute_minutes` | Drive time to BAMC (Google Maps or Haversine) |
-| `crime_per_1k` | Criminal incidents per 1,000 residents |
-| `crime_flag` | LOW / ELEVATED / HIGH / DATA_SUSPECT — tercile within surviving pool |
-| `owner_occ_pct` | % of homes owner-occupied |
-| `median_hh_income` | Median household income — tenant base quality indicator |
-| `zhvi_cov` | Price volatility (Coefficient of Variation). Lower = more stable. |
-| `zhvi_cagr_5yr` | Annualized home value growth, last 5 years — display only |
-| `zhvi_cagr_10yr` | Annualized home value growth, last 10 years — display only |
-| `final_score` | Composite score 0–1. Higher = better overall. |
-| `weighted_*` | Each factor's contribution — shows _why_ a ZIP ranked where it did |
+| Column              | What It Means                                                           |
+| ------------------- | ----------------------------------------------------------------------- |
+| `rank`              | Overall rank. 1 = best.                                                 |
+| `zip`               | ZIP code                                                                |
+| `median_home_value` | Estimated median home price (Zillow ZHVI)                               |
+| `median_rent`       | Estimated median asking rent per unit (Zillow ZORI)                     |
+| `est_room_rent`     | Per-room estimate (`ZORI / TARGET_BEDROOMS`) — used for room-hack yield |
+| `rent_to_price`     | Gross yield (room-hack formula). Raw value, before the 12% cap.         |
+| `commute_minutes`   | Drive time to BAMC (Google Maps or Haversine)                           |
+| `crime_per_1k`      | Criminal incidents per 1,000 residents                                  |
+| `crime_flag`        | LOW / ELEVATED / HIGH / DATA_SUSPECT — tercile within surviving pool    |
+| `owner_occ_pct`     | % of homes owner-occupied                                               |
+| `median_hh_income`  | Median household income — tenant base quality indicator                 |
+| `zhvi_cov`          | Price volatility (Coefficient of Variation). Lower = more stable.       |
+| `zhvi_cagr_5yr`     | Annualized home value growth, last 5 years — display only               |
+| `zhvi_cagr_10yr`    | Annualized home value growth, last 10 years — display only              |
+| `final_score`       | Composite score 0–1. Higher = better overall.                           |
+| `weighted_*`        | Each factor's contribution — shows _why_ a ZIP ranked where it did      |
 
 **How to actually use the table:** Don't just look at `final_score` and move on. Read the weighted columns — they show what's driving the rank. A ZIP ranked #3 because of commute and yield might be a worse real-world choice than a ZIP ranked #5 with a stronger safety score.
 
@@ -422,15 +422,15 @@ Two Jupyter notebooks go deeper than the pipeline output can.
 
 Validates every model assumption before you trust the output:
 
-| Section | Question answered |
-| ------- | ----------------- |
-| 1. ZHVI | Where does the $450k ceiling cut? Is the stability metric discriminating? |
-| 2. ZORI / Yield | Where does the 3.5% floor land in the SA distribution? |
-| 3. Census | Do the owner-occ and income filter thresholds reflect SA's actual clustering? |
-| 4. Crime | What fraction of 5M+ dispatch calls is actually crime? Does the allowlist hold up? |
-| 5. Cross-source | How many ZIPs survive each pipeline stage? |
-| 6. Findings | Template to record config change decisions as you investigate |
-| 7. ZHVF | Where have each top ZIP's prices been, and where is Zillow's forecast pointing? |
+| Section         | Question answered                                                                  |
+| --------------- | ---------------------------------------------------------------------------------- |
+| 1. ZHVI         | Where does the $450k ceiling cut? Is the stability metric discriminating?          |
+| 2. ZORI / Yield | Where does the 3.5% floor land in the SA distribution?                             |
+| 3. Census       | Do the owner-occ and income filter thresholds reflect SA's actual clustering?      |
+| 4. Crime        | What fraction of 5M+ dispatch calls is actually crime? Does the allowlist hold up? |
+| 5. Cross-source | How many ZIPs survive each pipeline stage?                                         |
+| 6. Findings     | Template to record config change decisions as you investigate                      |
+| 7. ZHVF         | Where have each top ZIP's prices been, and where is Zillow's forecast pointing?    |
 
 Section 7 requires `data/final/ranked_zip_scores.csv` (run the pipeline first).
 
@@ -531,7 +531,7 @@ satx_house_hack_model/
 
 **Pipeline execution order:**
 
-```
+```math
 data_loader → preprocess (ZHVI stability + CAGR) → commute → merge →
 hard filters → crime flagging → yield cap → log transform → normalize → score → output
 ```
@@ -567,6 +567,7 @@ The first `/api/geojson` request downloads the Texas ZIP boundary file (~22 MB).
 **The model is a research funnel, not a buy signal.**
 
 What it cannot see:
+
 - HOA rules that prohibit renting rooms or separate units
 - Whether a ZIP's housing stock actually contains duplexes and multifamily properties
 - Days-on-market — critical for PCS exit liquidity
@@ -575,6 +576,7 @@ What it cannot see:
 - Military tenant density in the area
 
 Known data constraints:
+
 - **Zillow ZORI** measures asking rent for new leases — not what long-term tenants actually pay
 - **Crime data** is SA police dispatch calls filtered to criminal types — not FBI UCR-verified statistics. Rates are inflated across all ZIPs due to CFS methodology; use `crime_flag` as a relative signal, not an absolute one.
 - **Census data** is from the ACS 5-year survey — some figures are a few years old
