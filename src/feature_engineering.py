@@ -14,9 +14,9 @@ import numpy as np
 import pandas as pd
 
 from config import (
-    CRIME_PERCENTILE_CUTOFF,
     MAX_COMMUTE_MILES,
     MAX_COMMUTE_MINS,
+    MAX_CRIME_PER_1K,
     TARGET_ROOMS_RENTED,
     THRESHOLDS,
     YIELD_CAP,
@@ -126,28 +126,45 @@ def apply_hard_filters(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def apply_crime_floor(df: pd.DataFrame) -> pd.DataFrame:
+def flag_crime_risk(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Remove ZIPs in the upper half of the crime distribution.
+    Add a crime_flag column instead of removing ZIPs.
 
-    Path B treats safety as a non-negotiable screen, not a scored tradeoff.
-    You live in this property — crime is not negotiable against yield.
+    CFS data quality varies across ZIPs (population denominator issues, non-SAPD
+    jurisdictions, commercial corridors with few residents). Hard-removing ZIPs on
+    relative crime rank throws away neighborhoods that may be perfectly livable.
 
-    Uses a percentile cutoff (not an absolute number) because:
-    - CFS data quality varies — an absolute threshold depends on data accuracy
-    - Relative ranking within SA is what matters for your decision
-    - 0.50 = keep only the safer half of candidate ZIPs
+    Instead: flag and let the 30% crime weight push high-crime ZIPs to the bottom.
+    The user sees all candidates with explicit risk labels.
 
-    The cutoff is set in config.py as CRIME_PERCENTILE_CUTOFF.
+    Flags (based on crime_per_1k within the candidate pool):
+      LOW          — bottom tercile (safest)
+      ELEVATED     — middle tercile
+      HIGH         — top tercile
+      DATA_SUSPECT — above MAX_CRIME_PER_1K absolute ceiling (data quality concern)
     """
     df = df.copy()
-    threshold = df["crime_per_1k"].quantile(CRIME_PERCENTILE_CUTOFF)
-    before = len(df)
-    df = df[df["crime_per_1k"] <= threshold].copy()
-    removed = before - len(df)
+    crime = df["crime_per_1k"]
+
+    t33 = crime.quantile(0.33)
+    t67 = crime.quantile(0.67)
+
+    def _flag(v: float) -> str:
+        if v > MAX_CRIME_PER_1K:
+            return "DATA_SUSPECT"
+        if v <= t33:
+            return "LOW"
+        if v <= t67:
+            return "ELEVATED"
+        return "HIGH"
+
+    df["crime_flag"] = crime.apply(_flag)
+
+    counts = df["crime_flag"].value_counts().to_dict()
     logger.info(
-        f"Crime floor ({CRIME_PERCENTILE_CUTOFF:.0%} percentile): "
-        f"threshold={threshold:.1f}/1k — removed {removed} ZIPs, {len(df)} remaining"
+        f"Crime flags: {counts} "
+        f"(DATA_SUSPECT threshold: {MAX_CRIME_PER_1K}/1k, "
+        f"LOW ≤ {t33:.0f}, ELEVATED ≤ {t67:.0f}, HIGH > {t67:.0f})"
     )
     return df
 

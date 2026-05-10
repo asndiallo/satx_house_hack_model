@@ -6,13 +6,17 @@ Uses Google Maps Distance Matrix API if key is set, else falls back
 to geopy straight-line distance (Haversine formula).
 """
 
+import hashlib
 import logging
 import time
 import requests
 import pandas as pd
 import numpy as np
 
-from config import DUTY_STATION, GOOGLE_MAPS_API_KEY, MAX_COMMUTE_MILES
+from cache_manager import CacheManager
+from config import CACHE_DIR, CACHE_TTL, DUTY_STATION, GOOGLE_MAPS_API_KEY, MAX_COMMUTE_MILES
+
+_cache = CacheManager(CACHE_DIR)
 
 logger = logging.getLogger(__name__)
 
@@ -61,24 +65,33 @@ def add_straight_line_distance(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Google Maps (preferred) ───────────────────────────────────────────────────
 
+def _commute_cache_key(zips: list[str]) -> str:
+    zip_hash = hashlib.md5(",".join(sorted(zips)).encode()).hexdigest()[:8]
+    return f"commute_to_bamc_{zip_hash}"
+
+
 def add_drive_time_google(df: pd.DataFrame, departure_time: str = "morning_peak") -> pd.DataFrame:
     """
     Add real drive time via Google Maps Distance Matrix API.
     Batches requests (max 25 origins per call) to stay within rate limits.
-    
+
     departure_time: 'morning_peak' targets 0600 Tuesday traffic
                     'offpeak' uses current time
-    
-    Stores results to avoid re-calling the API.
+
+    Results cached for 1 year — drive times to BAMC are effectively static.
+    Cache is keyed by the sorted ZIP set so a changed input triggers a fresh fetch.
     """
     if not GOOGLE_MAPS_API_KEY:
         logger.warning("No GOOGLE_MAPS_API_KEY found. Falling back to straight-line.")
         return add_straight_line_distance(df)
-    
+
     if "zip_lat" not in df.columns:
         raise ValueError("Need 'zip_lat' and 'zip_lon' columns for Google Maps calls.")
-    
-    import math
+
+    cache_key = _commute_cache_key(df["zip"].tolist())
+    cached = _cache.get(cache_key, ttl_hours=CACHE_TTL["commute_hours"])
+    if cached is not None:
+        return cached
     
     destination = f"{BAMC_LAT},{BAMC_LON}"
     results = []
@@ -131,4 +144,5 @@ def add_drive_time_google(df: pd.DataFrame, departure_time: str = "morning_peak"
     commute_df = pd.DataFrame(results)
     df = df.merge(commute_df, on="zip", how="left")
     logger.info("Google Maps drive times added successfully")
+    _cache.set(cache_key, df, source="add_drive_time_google")
     return df

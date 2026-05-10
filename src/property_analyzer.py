@@ -20,6 +20,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
+    CACHE_DIR,
     CAGR_5YR_GREEN,
     CAGR_5YR_YELLOW,
     COC_GREEN,
@@ -28,7 +29,6 @@ from config import (
     CRIME_TIER_THRESHOLDS,
     DATA_FINAL,
     DATA_PROC,
-    DATA_RAW,
     DUTY_STATION,
     EXIT_NEUTRAL_YELLOW,
     MAX_COMMUTE_MINS,
@@ -41,14 +41,14 @@ from config import (
     THRESHOLDS,
     VIOLENT_CRIME_PROBLEMS,
 )
+from data_loader import load_zhvf
 
 logger = logging.getLogger(__name__)
 
 # ── File paths ────────────────────────────────────────────────────────────────
 _RANKED_PATH = DATA_FINAL / "ranked_zip_scores.csv"
 _MERGED_PATH = DATA_PROC / "merged_zip_dataset.csv"
-_ZHVF_PATH = DATA_RAW / "zhvf_growth_zip.csv"
-_CRIME_RAW_PATH = DATA_RAW / "sa_crime_raw.csv"
+_CRIME_RAW_PATH = CACHE_DIR / "sa_crime_raw.csv"
 _CRIME_TYPE_CACHE = DATA_PROC / "crime_type_by_zip.csv"
 _CRIME_WEEKDAY_CACHE = DATA_PROC / "crime_weekday_by_zip.csv"
 
@@ -842,23 +842,18 @@ def _load_pipeline_data() -> (
         merged = pd.read_csv(_MERGED_PATH, dtype={"zip": str})
         merged["zip"] = merged["zip"].str.zfill(5)
 
-    if _ZHVF_PATH.exists():
-        try:
-            zhvf = pd.read_csv(_ZHVF_PATH)
-            # Normalize ZIP column
+    try:
+        zhvf = load_zhvf()
+        if zhvf is not None:
             zip_col = next(
-                (
-                    c
-                    for c in zhvf.columns
-                    if c.lower() in ("regionname", "zip", "zipcode")
-                ),
+                (c for c in zhvf.columns if c.lower() in ("regionname", "zip", "zipcode")),
                 None,
             )
             if zip_col:
                 zhvf["zip"] = zhvf[zip_col].astype(str).str.strip().str.zfill(5)
-        except Exception as e:
-            logger.warning(f"Could not load ZHVF data: {e}")
-            zhvf = None
+    except Exception as e:
+        logger.warning(f"Could not load ZHVF data: {e}")
+        zhvf = None
 
     return ranked, merged, zhvf
 

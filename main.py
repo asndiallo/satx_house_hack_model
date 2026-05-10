@@ -29,7 +29,7 @@ from preprocess import (
 from feature_engineering import (
     compute_rent_to_price,
     apply_hard_filters,
-    apply_crime_floor,
+    flag_crime_risk,
     apply_yield_cap,
     apply_log_crime_transform,
     normalize_features,
@@ -230,15 +230,8 @@ def run_pipeline(use_google_maps: bool = True, top_n: int = 15, diagnose_mode: b
         )
         return
 
-    # Crime floor — safety is not tradeable
-    features = apply_crime_floor(features)
-
-    if features.empty:
-        logger.error(
-            "All ZIPs removed by crime floor. "
-            "Lower CRIME_PERCENTILE_CUTOFF in config.py (e.g. 0.40)."
-        )
-        return
+    # Flag crime risk — keeps all ZIPs, adds crime_flag column for transparency
+    features = flag_crime_risk(features)
 
     # Transform for scoring
     features = apply_yield_cap(features)

@@ -12,12 +12,25 @@ Some things are NOT tradeable — those are filters, not weights.
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # ── Project Paths ─────────────────────────────────────────────────────────────
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DATA_RAW = ROOT_DIR / "data" / "raw"
 DATA_PROC = ROOT_DIR / "data" / "processed"
 DATA_FINAL = ROOT_DIR / "data" / "final"
 OUTPUTS = ROOT_DIR / "outputs"
+CACHE_DIR = ROOT_DIR / ".cache"
+
+# ── Cache TTLs ────────────────────────────────────────────────────────────────
+CACHE_TTL = {
+    "census_hours": 720,    # 30 days — ACS is annual data, no point re-fetching
+    "crime_hours": 168,     # 7 days — SA Open Data portal updates frequently
+    "commute_hours": 8760,  # 1 year — drive times to BAMC are effectively static
+    "zillow_hours": 168,    # 7 days — Zillow publishes monthly updates
+    "zhvf_hours": 168,      # 7 days — ZHVF forecast refreshes monthly
+    "uszips_hours": 8760,   # 1 year — ZIP centroids never change
+}
 
 # ── Duty Station ──────────────────────────────────────────────────────────────
 DUTY_STATION = {
@@ -79,20 +92,19 @@ assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 # Anything here is a SCREEN, not a scored dimension.
 # Path B principle: if you won't compromise on it, make it a filter.
 THRESHOLDS = {
-    # Recalibrated for TARGET_BEDROOMS=3 formula (2026):
-    # est_room_rent = ZORI / TARGET_BEDROOMS (not ZORI / avg_renter_bedrooms).
-    # At SA median ZORI ≈ $1,446 and median home $265k:
-    #   yield = ($1,446 / 3) × 2 × 12 / $265k = $11,568 / $265k ≈ 4.4%
-    # Floor of 4.5% filters ZIPs with genuinely weak ZORI fundamentals.
-    # (Was 5.5% under the avg_renter_bedrooms formula; 0.055 × 3/avg_bed ≈ 0.045
-    # preserves approximately the same pass/fail boundary.)
-    # Revisit annually as rates and prices shift.
-    "min_rent_to_price": 0.045,
+    # Lowered from 0.045 to 0.035 to include multifamily house hack candidates.
+    # SFH room hack at median ZORI/price yields ~6% (passes 4.5% easily).
+    # Duplex house hack yields ~4.3% in Phase 1 (one rented unit, higher asset price)
+    # and ~8.6% in Phase 2 (full rental) — a sound investment that 4.5% would reject.
+    # 3.5% still screens out ZIPs with genuinely weak rental fundamentals.
+    "min_rent_to_price": 0.035,
     # SA 2026 conforming VA loan limit — adjust if your COE differs
     "max_home_value": 450_000,
-    # Tightened from 0.40: below 50% = neighborhood is primarily transient renters
-    # That's not who you want living next to you or renting from you
-    "min_owner_occ_pct": 0.50,
+    # Lowered to 0.35 for multifamily house hack strategy (live in one unit, rent
+    # others, then fully vacate after ~1 year). Rental-dense neighborhoods (35–50%
+    # owner-occ) often have the strongest multifamily inventory and tenant demand —
+    # exactly what you need for the property to self-fund after you PCS/move on.
+    "min_owner_occ_pct": 0.35,
     # Above 85% = low rental demand; finding tenants will be hard.
     # Raised from 0.80: highly owner-occupied suburban ZIPs near BAMC were being
     # excluded even though they offer strong appreciation and low crime.

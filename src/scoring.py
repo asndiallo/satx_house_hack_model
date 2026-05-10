@@ -64,6 +64,7 @@ def generate_summary_table(df: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
         "rent_to_price",
         "commute_minutes",
         "crime_per_1k",
+        "crime_flag",
         "owner_occ_pct",
         "zhvi_cov",
         "zhvi_cagr_5yr",
