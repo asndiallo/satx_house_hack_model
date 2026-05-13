@@ -21,7 +21,7 @@ from config import (
     BCAD_ARCGIS_URL,
     CACHE_DIR, CACHE_TTL,
     CENSUS_API_KEY, CENSUS_BASE_URL, CENSUS_YEAR,
-    CENSUS_TABLES, SA_CRIME_URL,
+    CENSUS_TABLES, SA_CRIME_URL, SA_PERMITS_URL,
     TARGET_STATE_FIPS,
 )
 
@@ -312,4 +312,57 @@ def load_bcad_data() -> Optional[pd.DataFrame]:
         f"{df['prop_count'].sum():,.0f} total parcels across {df['zip'].nunique()} ZIPs"
     )
     _cache.set("bcad_parcels", df, source="load_bcad_data")
+    return df
+
+
+# ── SA Building Permits ───────────────────────────────────────────────────────
+
+_PERMITS_CACHE_PATH = CACHE_DIR / "sa_permits_issued.csv"
+
+
+def load_permit_data() -> Optional[pd.DataFrame]:
+    """
+    Load SA building permits from the SA Open Data portal.
+
+    Cached as a flat CSV file (same pattern as crime data) with a 7-day TTL
+    marker. The file covers current + recent months; we filter to the trailing
+    12 months in process_permits().
+
+    Uses browser-like headers — the SA Open Data portal blocks default
+    Python user-agents (same issue as the crime data endpoint).
+    """
+    marker = _cache.get("permits_marker", ttl_hours=CACHE_TTL["permits_hours"])
+    if marker and _PERMITS_CACHE_PATH.exists():
+        logger.info(f"Using cached permits data: {_PERMITS_CACHE_PATH}")
+        return pd.read_csv(_PERMITS_CACHE_PATH, dtype=str, low_memory=False)
+
+    logger.info("Downloading SA building permits (~20 MB)...")
+    try:
+        resp = requests.get(
+            SA_PERMITS_URL,
+            headers=_HEADERS,
+            stream=True,
+            timeout=120,
+        )
+        resp.raise_for_status()
+
+        _PERMITS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        bytes_written = 0
+        with open(_PERMITS_CACHE_PATH, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
+                bytes_written += len(chunk)
+
+        mb = bytes_written / (1024 * 1024)
+        logger.info(f"Permits download complete: {mb:.1f} MB → {_PERMITS_CACHE_PATH}")
+    except Exception as exc:
+        if _PERMITS_CACHE_PATH.exists():
+            logger.warning(f"Permits download failed ({exc}) — using stale cache")
+        else:
+            logger.warning(f"Permits download failed (non-fatal): {exc}")
+            return None
+
+    _cache.set("permits_marker", True, source="load_permit_data")
+    df = pd.read_csv(_PERMITS_CACHE_PATH, dtype=str, low_memory=False)
+    logger.info(f"Permits loaded: {len(df):,} rows")
     return df

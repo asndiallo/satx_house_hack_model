@@ -6,6 +6,7 @@ No scoring logic here — just clean, typed, merged data.
 """
 
 import logging
+import re
 
 import numpy as np
 import pandas as pd
@@ -386,6 +387,122 @@ def process_crime(
     return result
 
 
+# ── Building Permits ─────────────────────────────────────────────────────────
+
+
+def process_permits(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate SA new residential construction permits to ZIP level.
+
+    Filters to: PERMIT TYPE = "Res New Building Permit" + WORK TYPE = "New"
+    + issued within the trailing 12 months.
+
+    Unit type classification — groups permits by address, sums unit counts:
+      sfr       — 1 unit at address  (detached SFR, typical subdivision home)
+      duplex    — 2 units at address (duplex filed as one or two permits)
+      small_mf  — 3–4 units at address (triplex / fourplex)
+      large_mf  — 5+ units at address (small apartment, often condo tower phase)
+
+    Output columns per ZIP (0 when no activity):
+      permit_sfr_12mo       — new SFR addresses permitted
+      permit_duplex_12mo    — new 2-unit addresses permitted
+      permit_small_mf_12mo  — new 3–4 unit addresses permitted
+      permit_large_mf_12mo  — new 5+ unit addresses permitted
+      permit_mf_12mo        — duplex + small_mf combined (unit-hack supply signal)
+      permit_total_12mo     — all residential new construction
+    """
+    df = df.copy()
+
+    # Filter to new residential construction only
+    mask = (
+        (df["PERMIT TYPE"].str.strip() == "Res New Building Permit") &
+        (df["WORK TYPE"].str.strip() == "New")
+    )
+    df = df[mask].copy()
+
+    # Trailing 12 months
+    df["DATE ISSUED"] = pd.to_datetime(df["DATE ISSUED"], errors="coerce")
+    cutoff = pd.Timestamp.now() - pd.DateOffset(months=12)
+    df = df[df["DATE ISSUED"] >= cutoff].copy()
+
+    if df.empty:
+        logger.warning("Permits: no records found after filtering — check date range")
+        return pd.DataFrame(columns=["zip"])
+
+    # Extract ZIP from address ("..., TX 78239")
+    df["zip"] = df["ADDRESS"].str.extract(r'\bTX\s+(\d{5})\b')
+    df = df.dropna(subset=["zip"])
+    df["zip"] = df["zip"].str.zfill(5)
+
+    # Count units in each permit from Project Name:
+    # "Building No: X; Unit No: 101 & 102" → 2 units
+    # "Unit No: N/A" → 1 unit
+    def _units_in_permit(name: str) -> int:
+        if not isinstance(name, str):
+            return 1
+        m = re.search(r'Unit No:\s*(.+?)$', name, re.I)
+        if not m:
+            return 1
+        u = m.group(1).strip().upper()
+        if re.fullmatch(r'N[/]?A', u):
+            return 1
+        parts = [
+            x.strip() for x in re.split(r'[,&\s]+', u)
+            if x.strip() and x.strip().upper() not in ("AND", "N/A", "NA")
+        ]
+        return max(1, len(parts))
+
+    df["units_in_permit"] = df["PROJECT NAME"].apply(_units_in_permit)
+
+    # Group by (zip, ADDRESS) — each unique address = one building under construction.
+    # Summing units_in_permit correctly handles both:
+    #   - duplex filed as one permit listing "Unit No: 101 & 102" (sum=2)
+    #   - duplex filed as two separate permits each with one unit (sum=2)
+    bldg = df.groupby(["zip", "ADDRESS"])["units_in_permit"].sum().reset_index()
+    bldg.columns = ["zip", "address", "total_units"]
+
+    def _classify(n: int) -> str:
+        if n <= 1: return "sfr"
+        if n == 2: return "duplex"
+        if n <= 4: return "small_mf"
+        return "large_mf"
+
+    bldg["unit_type"] = bldg["total_units"].apply(_classify)
+
+    # Filter to SA metro ZIPs
+    sa_zips = {str(z) for z in range(78201, 78270)} | {"78109", "78148", "78150", "78154", "78266"}
+    bldg = bldg[bldg["zip"].isin(sa_zips)]
+
+    # Pivot to ZIP-level columns
+    pivot = (
+        bldg.groupby(["zip", "unit_type"])
+        .size()
+        .unstack(fill_value=0)
+        .reindex(columns=["sfr", "duplex", "small_mf", "large_mf"], fill_value=0)
+        .reset_index()
+    )
+
+    pivot = pivot.rename(columns={
+        "sfr":      "permit_sfr_12mo",
+        "duplex":   "permit_duplex_12mo",
+        "small_mf": "permit_small_mf_12mo",
+        "large_mf": "permit_large_mf_12mo",
+    })
+    pivot["permit_mf_12mo"]    = pivot["permit_duplex_12mo"] + pivot["permit_small_mf_12mo"]
+    pivot["permit_total_12mo"] = pivot[
+        ["permit_sfr_12mo", "permit_duplex_12mo", "permit_small_mf_12mo", "permit_large_mf_12mo"]
+    ].sum(axis=1)
+
+    n_zips = len(pivot)
+    logger.info(
+        f"Permits (trailing 12mo): {bldg.shape[0]} buildings across {n_zips} SA ZIPs | "
+        f"SFR: {pivot['permit_sfr_12mo'].sum()} | "
+        f"Duplex: {pivot['permit_duplex_12mo'].sum()} | "
+        f"SmallMF: {pivot['permit_small_mf_12mo'].sum()}"
+    )
+    return pivot
+
+
 # ── BCAD ─────────────────────────────────────────────────────────────────────
 
 
@@ -449,6 +566,7 @@ def merge_datasets(
     stability: pd.DataFrame = None,
     cagr: pd.DataFrame = None,
     bcad: pd.DataFrame = None,
+    permits: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Inner-join all processed DataFrames on ZIP.
@@ -491,6 +609,17 @@ def merge_datasets(
         base = base.merge(bcad, on="zip", how="left")
         n_filled = base["bcad_sfr_count"].notna().sum() if "bcad_sfr_count" in base.columns else 0
         logger.info(f"BCAD merged (left join): {n_filled}/{len(base)} ZIPs have parcel data")
+
+    # Permits are display-only — left join; ZIPs with no permits get 0 filled below
+    if permits is not None:
+        base = base.merge(permits, on="zip", how="left")
+        permit_cols = ["permit_sfr_12mo", "permit_duplex_12mo", "permit_small_mf_12mo",
+                       "permit_large_mf_12mo", "permit_mf_12mo", "permit_total_12mo"]
+        for col in permit_cols:
+            if col in base.columns:
+                base[col] = base[col].fillna(0).astype(int)
+        n_active = (base.get("permit_total_12mo", 0) > 0).sum()
+        logger.info(f"Permits merged (left join): {n_active}/{len(base)} ZIPs had new construction activity")
 
     # Population was only needed for crime normalization — drop from final dataset
     if "population" in base.columns:

@@ -31,6 +31,7 @@ CACHE_TTL = {
     "zhvf_hours": 168,      # 7 days — ZHVF forecast refreshes monthly
     "uszips_hours": 8760,   # 1 year — ZIP centroids never change
     "bcad_hours": 720,      # 30 days — BCAD assessed values update annually
+    "permits_hours": 168,   # 7 days — SA permits portal refreshes frequently
 }
 
 # ── Duty Station ──────────────────────────────────────────────────────────────
@@ -332,6 +333,15 @@ GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", None)
 # State_cd reference: A1=SFR, B1=Small MF (duplex/triplex/quad), B2=Large MF.
 BCAD_ARCGIS_URL = (
     "https://maps.bexar.org/arcgis/rest/services/Parcels/MapServer/0/query"
+)
+
+# ── SA Building Permits ───────────────────────────────────────────────────────
+# Live "permits issued" CSV from the SA Open Data portal (same portal as crime).
+# Covers current calendar year + trailing months. We filter server-side to
+# the trailing 12 months of "Res New Building Permit / New" records.
+SA_PERMITS_URL = (
+    "https://data.sanantonio.gov/dataset/05012dcb-ba1b-4ade-b5f3-7403bc7f52eb"
+    "/resource/c21106f9-3ef5-4f3a-8604-f992b4db7512/download/permits_issued.csv"
 )
 
 # ── San Antonio Open Data ─────────────────────────────────────────────────────

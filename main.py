@@ -21,10 +21,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from utils import setup_logging, save_csv, load_zip_centroids
-from data_loader import load_zhvi, load_zori, load_census_acs, load_crime_data, load_bcad_data
+from data_loader import load_zhvi, load_zori, load_census_acs, load_crime_data, load_bcad_data, load_permit_data
 from preprocess import (
     process_zhvi, compute_zhvi_stability, compute_zhvi_cagr,
-    process_zori, process_census, process_crime, process_bcad, merge_datasets
+    process_zori, process_census, process_crime, process_bcad, process_permits, merge_datasets
 )
 from feature_engineering import (
     compute_rent_to_price,
@@ -137,8 +137,9 @@ def run_pipeline(use_google_maps: bool = True, top_n: int = 15, diagnose_mode: b
     zori_raw   = load_zori()
     census_raw = load_census_acs()
     crime_raw  = load_crime_data()
-    bcad_raw   = load_bcad_data()   # optional — None if fetch fails
-    zip_coords = load_zip_centroids()
+    bcad_raw    = load_bcad_data()    # optional — None if fetch fails
+    permit_raw  = load_permit_data()  # optional — None if fetch fails
+    zip_coords  = load_zip_centroids()
 
     # ── Step 2: Process ───────────────────────────────────────────────────────
     logger.info("="*60)
@@ -151,7 +152,8 @@ def run_pipeline(use_google_maps: bool = True, top_n: int = 15, diagnose_mode: b
     zori      = process_zori(zori_raw)
     census    = process_census(census_raw)
     crime     = process_crime(crime_raw, census_df=census)
-    bcad      = process_bcad(bcad_raw) if bcad_raw is not None else None
+    bcad      = process_bcad(bcad_raw)     if bcad_raw    is not None else None
+    permits   = process_permits(permit_raw) if permit_raw   is not None else None
 
     if diagnose_mode:
         diagnose("ZHVI processed",      zhvi,      ["median_home_value"])
@@ -200,7 +202,10 @@ def run_pipeline(use_google_maps: bool = True, top_n: int = 15, diagnose_mode: b
     logger.info("STEP 4: Merging datasets")
     logger.info("="*60)
 
-    merged = merge_datasets(zhvi, zori, census, crime, commute, stability=stability, cagr=cagr, bcad=bcad)
+    merged = merge_datasets(
+        zhvi, zori, census, crime, commute,
+        stability=stability, cagr=cagr, bcad=bcad, permits=permits,
+    )
     save_csv(merged, DATA_PROC / "merged_zip_dataset.csv", "merged")
 
     if merged.empty:
