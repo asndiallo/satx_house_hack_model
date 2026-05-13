@@ -286,6 +286,9 @@ CAGR_5YR_GREEN = 0.03  # ≥ 3%/yr = GREEN
 CAGR_5YR_YELLOW = 0.01  # 1–3%/yr = YELLOW; < 1% = RED
 
 # ── Census API ────────────────────────────────────────────────────────────────
+# Free key: https://api.census.gov/data/key_signup.html  (instant email delivery)
+# Without a key, anonymous requests are capped at 500/day per IP.
+CENSUS_API_KEY = os.getenv("CENSUS_API_KEY", None)
 CENSUS_YEAR = 2022
 CENSUS_TABLES = {
     "owner_occ_count": "B25003_002E",
@@ -303,6 +306,19 @@ CENSUS_TABLES = {
     "renter_3bed": "B25042_005E",
     "renter_4bed": "B25042_006E",
     "renter_5bed": "B25042_007E",  # 5+ bedrooms
+    # B25024: Units in structure — housing stock composition by building type.
+    # Used to compute pct_sfr, pct_duplex, pct_small_mf per ZIP.
+    # Tells you where duplexes / small MF properties actually exist —
+    # critical for comparing room-hack (SFR) vs unit-hack (duplex/triplex) viability.
+    "units_total":  "B25024_001E",  # all housing units
+    "units_1det":   "B25024_002E",  # 1-unit, detached (SFR)
+    "units_1att":   "B25024_003E",  # 1-unit, attached (townhouse/rowhouse)
+    "units_2":      "B25024_004E",  # 2-unit buildings (duplex)
+    "units_3_4":    "B25024_005E",  # 3–4 unit buildings
+    "units_5_9":    "B25024_006E",  # 5–9 unit buildings
+    "units_10_19":  "B25024_007E",  # 10–19 unit buildings
+    "units_20_49":  "B25024_008E",  # 20–49 unit buildings
+    "units_50plus": "B25024_009E",  # 50+ unit buildings (large apartment complex)
 }
 CENSUS_BASE_URL = "https://api.census.gov/data"
 

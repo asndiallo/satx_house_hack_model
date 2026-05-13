@@ -108,6 +108,7 @@
           <th class="px-3 py-2.5" data-col="owner_occ_pct">Own%</th>
           <th class="px-3 py-2.5" data-col="zhvi_cagr_5yr">5yr CAGR</th>
           <th class="px-3 py-2.5" data-col="median_hh_income">HH Income</th>
+          <th class="px-3 py-2.5" data-col="pct_small_mf" title="Housing stock mix — bar: SFR (blue) / Duplex (green) / 3–4u (amber) / 5+u (gray). Number shows duplex %.">Mix</th>
           <th class="px-3 py-2.5 rounded-tr-lg" data-col="final_score">Score</th>
         </tr>
       </thead>
@@ -120,10 +121,14 @@
   <div class="px-6 pb-5 flex flex-wrap gap-4 text-xs text-slate-500">
     <span class="font-medium text-slate-400">Score:</span>
     <span><span class="inline-block w-2 h-2 rounded-sm bg-red-500 mr-1"></span>Crime 30%</span>
-    <span><span class="inline-block w-2 h-2 rounded-sm bg-emerald-500 mr-1"></span>Yield 25%</span>
-    <span><span class="inline-block w-2 h-2 rounded-sm bg-blue-500 mr-1"></span>Owner-occ 20%</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-emerald-500 mr-1"></span>Yield 20%</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-blue-500 mr-1"></span>Owner-occ 25%</span>
     <span><span class="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1"></span>Commute 15%</span>
     <span><span class="inline-block w-2 h-2 rounded-sm bg-purple-500 mr-1"></span>Stability 10%</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-blue-500 mr-1"></span>Mix: SFR</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-emerald-500 mr-1"></span>Duplex</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1"></span>3–4u</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-slate-500 mr-1"></span>5+u</span>
     <span class="ml-auto text-slate-600">Click any row to locate on map ↗</span>
   </div>
 </div>
@@ -137,6 +142,7 @@
       <button data-metric="crime_per_1k"     class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Crime</button>
       <button data-metric="rent_to_price"    class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Yield</button>
       <button data-metric="commute_minutes"  class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Drive</button>
+      <button data-metric="pct_duplex"       class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Duplex%</button>
     </div>
     <span id="map-status" class="ml-auto text-xs text-slate-500"></span>
   </div>
@@ -178,6 +184,7 @@ const METRIC_COLOR = {
   crime_per_1k:    v => !v ? '#374151' : v <= 100 ? '#059669' : v <= 300 ? '#34d399' : v <= 500 ? '#f59e0b' : v <= 700 ? '#f97316' : '#ef4444',
   rent_to_price:   v => !v ? '#374151' : v >= 0.10 ? '#059669' : v >= 0.08 ? '#34d399' : v >= 0.06 ? '#f59e0b' : v >= 0.045 ? '#f97316' : '#ef4444',
   commute_minutes: v => !v ? '#374151' : v <= 20 ? '#059669' : v <= 30 ? '#34d399' : v <= 45 ? '#f59e0b' : v <= 60 ? '#f97316' : '#ef4444',
+  pct_duplex:      v => !v ? '#374151' : v >= 0.12 ? '#059669' : v >= 0.07 ? '#34d399' : v >= 0.04 ? '#f59e0b' : v >= 0.02 ? '#f97316' : '#ef4444',
 };
 
 const METRIC_LEGEND = {
@@ -185,6 +192,7 @@ const METRIC_LEGEND = {
   crime_per_1k:    [['#059669','≤ 100'],['#34d399','100–300'],['#f59e0b','300–500'],['#f97316','500–700'],['#ef4444','> 700']],
   rent_to_price:   [['#ef4444','< 4.5%'],['#f97316','4.5–6%'],['#f59e0b','6–8%'],['#34d399','8–10%'],['#059669','≥ 10%']],
   commute_minutes: [['#059669','≤ 20 min'],['#34d399','20–30'],['#f59e0b','30–45'],['#f97316','45–60'],['#ef4444','> 60']],
+  pct_duplex:      [['#ef4444','< 2%'],['#f97316','2–4%'],['#f59e0b','4–7%'],['#34d399','7–12%'],['#059669','≥ 12%']],
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -217,6 +225,25 @@ function scoreBar(r) {
     </div>`;
 }
 
+function mixBar(r) {
+  if (r.pct_sfr == null) return '<span class="text-slate-600">—</span>';
+  const sfr   = (r.pct_sfr      || 0) * 100;
+  const dup   = (r.pct_duplex   || 0) * 100;
+  const smf3  = Math.max(0, ((r.pct_small_mf || 0) - (r.pct_duplex || 0)) * 100);
+  const large = Math.max(0, 100 - sfr - dup - smf3);
+  const tip   = `SFR ${sfr.toFixed(0)}% · Duplex ${dup.toFixed(0)}% · 3–4u ${smf3.toFixed(0)}% · 5+u ${large.toFixed(0)}%`;
+  return `
+    <div title="${tip}">
+      <div style="display:flex;height:5px;width:55px;border-radius:2px;overflow:hidden;gap:1px;margin-bottom:3px">
+        <div style="background:#3b82f6;width:${sfr.toFixed(1)}%"></div>
+        <div style="background:#10b981;width:${dup.toFixed(1)}%"></div>
+        <div style="background:#f59e0b;width:${smf3.toFixed(1)}%"></div>
+        <div style="background:#475569;width:${large.toFixed(1)}%"></div>
+      </div>
+      <span style="font-size:10px;color:#6ee7b7">${dup.toFixed(0)}%</span><span style="font-size:9px;color:#64748b"> dup</span>
+    </div>`;
+}
+
 function popupHTML(p) {
   const gmaps  = `https://www.google.com/maps/search/${encodeURIComponent(p.zip + ' San Antonio TX')}`;
   const zillow = `https://www.zillow.com/homes/${p.zip}_rb/`;
@@ -240,6 +267,14 @@ function popupHTML(p) {
             <td style="color:#e2e8f0">${fmt.usd(p.median_hh_income)}</td></tr>
         <tr><td style="color:#94a3b8;padding:2px 0">5yr CAGR</td>
             <td style="color:${cagrClass(p.zhvi_cagr_5yr)}">${fmt.cagr(p.zhvi_cagr_5yr)}</td></tr>
+        ${p.pct_duplex != null ? `
+        <tr><td colspan="2" style="padding-top:6px;padding-bottom:2px;color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.06em">Housing Stock</td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">SFR</td>
+            <td style="color:#93c5fd">${fmt.pct(p.pct_sfr)}</td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">Duplex (2-unit)</td>
+            <td style="color:#6ee7b7">${fmt.pct(p.pct_duplex)}</td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">Small MF (2–4u)</td>
+            <td style="color:#e2e8f0">${fmt.pct(p.pct_small_mf)}</td></tr>` : ''}
       </table>
       <div style="margin-top:10px;display:flex;gap:10px;font-size:12px">
         <a href="${gmaps}"  target="_blank" class="popup-link">📍 Maps</a>
@@ -272,7 +307,7 @@ function renderTable(rows) {
   document.getElementById('row-count').textContent = `${rows.length} ZIP${rows.length !== 1 ? 's' : ''}`;
 
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="11" class="text-center text-slate-500 py-8">No results.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="text-center text-slate-500 py-8">No results.</td></tr>`;
     return;
   }
 
@@ -295,6 +330,7 @@ function renderTable(rows) {
         <td class="px-3 py-2 text-slate-300">${fmt.pct(r.owner_occ_pct)}</td>
         <td class="px-3 py-2 font-semibold ${cagrClass(r.zhvi_cagr_5yr)}">${fmt.cagr(r.zhvi_cagr_5yr)}</td>
         <td class="px-3 py-2 text-slate-300">${fmt.usd(r.median_hh_income)}</td>
+        <td class="px-3 py-2">${mixBar(r)}</td>
         <td class="px-3 py-2">${scoreBar(r)}</td>
       </tr>`;
   }).join('');

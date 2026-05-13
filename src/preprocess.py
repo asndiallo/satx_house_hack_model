@@ -186,6 +186,15 @@ def process_census(df: pd.DataFrame) -> pd.DataFrame:
         "renter_3bed",
         "renter_4bed",
         "renter_5bed",
+        "units_total",
+        "units_1det",
+        "units_1att",
+        "units_2",
+        "units_3_4",
+        "units_5_9",
+        "units_10_19",
+        "units_20_49",
+        "units_50plus",
     ]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -230,11 +239,43 @@ def process_census(df: pd.DataFrame) -> pd.DataFrame:
             f"{df['avg_renter_bedrooms'].max():.2f}"
         )
 
+    # Compute housing type percentages from B25024 (Units in Structure).
+    # pct_sfr      = SFR (detached + attached) share — room-hack candidate density
+    # pct_duplex   = 2-unit share — most common unit-hack target
+    # pct_small_mf = 2–4 unit share — all small MF house-hack targets combined
+    b25024_required = ["units_total", "units_1det", "units_1att", "units_2", "units_3_4"]
+    if all(c in df.columns for c in b25024_required):
+        valid = df["units_total"] > 0
+        df["pct_sfr"] = np.nan
+        df["pct_duplex"] = np.nan
+        df["pct_small_mf"] = np.nan
+        df.loc[valid, "pct_sfr"] = (
+            (df.loc[valid, "units_1det"] + df.loc[valid, "units_1att"])
+            / df.loc[valid, "units_total"]
+        )
+        df.loc[valid, "pct_duplex"] = (
+            df.loc[valid, "units_2"] / df.loc[valid, "units_total"]
+        )
+        df.loc[valid, "pct_small_mf"] = (
+            (df.loc[valid, "units_2"] + df.loc[valid, "units_3_4"])
+            / df.loc[valid, "units_total"]
+        )
+        n = valid.sum()
+        logger.info(
+            f"Housing mix (B25024): {n} ZIPs | "
+            f"sfr median: {df['pct_sfr'].median():.1%} | "
+            f"duplex median: {df['pct_duplex'].median():.1%} | "
+            f"small-MF median: {df['pct_small_mf'].median():.1%}"
+        )
+
     keep = ["zip", "owner_occ_pct", "median_hh_income"]
     if "population" in df.columns:
         keep.append("population")
     if "avg_renter_bedrooms" in df.columns:
         keep.append("avg_renter_bedrooms")
+    for col in ["pct_sfr", "pct_duplex", "pct_small_mf"]:
+        if col in df.columns:
+            keep.append(col)
 
     result = df[keep]
     logger.info(f"Census: {len(result)} ZIPs after processing")

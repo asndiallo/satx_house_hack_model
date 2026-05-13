@@ -17,13 +17,16 @@ from typing import Optional
 from cache_manager import CacheManager
 from config import (
     CACHE_DIR, CACHE_TTL,
-    CENSUS_BASE_URL, CENSUS_YEAR,
+    CENSUS_API_KEY, CENSUS_BASE_URL, CENSUS_YEAR,
     CENSUS_TABLES, SA_CRIME_URL
 )
 
 _cache = CacheManager(CACHE_DIR)
 
 logger = logging.getLogger(__name__)
+
+# Bump this key whenever CENSUS_TABLES changes — ensures stale caches auto-invalidate.
+_CENSUS_CACHE_KEY = "census_acs_v2"
 
 # Browser-like headers — SA Open Data portal (and many gov sites) return 403
 # when they detect Python's default urllib user-agent string.
@@ -124,7 +127,7 @@ def load_census_acs() -> pd.DataFrame:
     Free, no API key required for basic access (<500 req/day).
     Returns ZIP-level DataFrame. Cached for 30 days.
     """
-    cached = _cache.get("census_acs", ttl_hours=CACHE_TTL["census_hours"])
+    cached = _cache.get(_CENSUS_CACHE_KEY, ttl_hours=CACHE_TTL["census_hours"])
     if cached is not None:
         return cached
 
@@ -134,10 +137,20 @@ def load_census_acs() -> pd.DataFrame:
         f"?get=NAME,{variables}"
         f"&for=zip+code+tabulation+area:*"
     )
+    if CENSUS_API_KEY:
+        url += f"&key={CENSUS_API_KEY}"
     logger.info(f"Fetching Census ACS from API: {url}")
     logger.info("Pulling all ZCTAs nationally -- will filter to Texas ZIPs afterward")
 
     response = requests.get(url, timeout=60)
+    if response.status_code == 302 or (response.headers.get("X-DataWebAPI-KeyError") == "1"):
+        raise RuntimeError(
+            "Census API rejected the request — API key required.\n\n"
+            "Get a free key at: https://api.census.gov/data/key_signup.html\n"
+            "Then add to your .env file:\n"
+            "  CENSUS_API_KEY=your_key_here\n\n"
+            "Keys are delivered instantly by email."
+        )
     response.raise_for_status()
 
     data = response.json()
@@ -154,7 +167,7 @@ def load_census_acs() -> pd.DataFrame:
     df = df[texas_mask].copy()
     logger.info(f"Filtered {before} national ZCTAs -> {len(df)} Texas ZIPs")
 
-    _cache.set("census_acs", df, source="load_census_acs")
+    _cache.set(_CENSUS_CACHE_KEY, df, source="load_census_acs")
     return df
 
 
