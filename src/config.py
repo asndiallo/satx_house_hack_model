@@ -30,6 +30,7 @@ CACHE_TTL = {
     "zillow_hours": 168,    # 7 days — Zillow publishes monthly updates
     "zhvf_hours": 168,      # 7 days — ZHVF forecast refreshes monthly
     "uszips_hours": 8760,   # 1 year — ZIP centroids never change
+    "bcad_hours": 720,      # 30 days — BCAD assessed values update annually
 }
 
 # ── Duty Station ──────────────────────────────────────────────────────────────
@@ -324,6 +325,14 @@ CENSUS_BASE_URL = "https://api.census.gov/data"
 
 # ── Google Maps ───────────────────────────────────────────────────────────────
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", None)
+
+# ── Bexar CAD (BCAD) ─────────────────────────────────────────────────────────
+# ArcGIS REST service — Bexar County GIS, no auth required.
+# Supports statistics queries (GROUP BY ZIP + State_cd) in a single request.
+# State_cd reference: A1=SFR, B1=Small MF (duplex/triplex/quad), B2=Large MF.
+BCAD_ARCGIS_URL = (
+    "https://maps.bexar.org/arcgis/rest/services/Parcels/MapServer/0/query"
+)
 
 # ── San Antonio Open Data ─────────────────────────────────────────────────────
 SA_CRIME_URL = (

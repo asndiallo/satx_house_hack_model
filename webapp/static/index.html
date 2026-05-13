@@ -143,6 +143,7 @@
       <button data-metric="rent_to_price"    class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Yield</button>
       <button data-metric="commute_minutes"  class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Drive</button>
       <button data-metric="pct_duplex"       class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Duplex%</button>
+      <button data-metric="bcad_mf_count"    class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">MF Stock</button>
     </div>
     <span id="map-status" class="ml-auto text-xs text-slate-500"></span>
   </div>
@@ -185,6 +186,7 @@ const METRIC_COLOR = {
   rent_to_price:   v => !v ? '#374151' : v >= 0.10 ? '#059669' : v >= 0.08 ? '#34d399' : v >= 0.06 ? '#f59e0b' : v >= 0.045 ? '#f97316' : '#ef4444',
   commute_minutes: v => !v ? '#374151' : v <= 20 ? '#059669' : v <= 30 ? '#34d399' : v <= 45 ? '#f59e0b' : v <= 60 ? '#f97316' : '#ef4444',
   pct_duplex:      v => !v ? '#374151' : v >= 0.12 ? '#059669' : v >= 0.07 ? '#34d399' : v >= 0.04 ? '#f59e0b' : v >= 0.02 ? '#f97316' : '#ef4444',
+  bcad_mf_count:   v => !v ? '#374151' : v >= 150 ? '#059669' : v >= 80 ? '#34d399' : v >= 40 ? '#f59e0b' : v >= 15 ? '#f97316' : '#ef4444',
 };
 
 const METRIC_LEGEND = {
@@ -193,6 +195,7 @@ const METRIC_LEGEND = {
   rent_to_price:   [['#ef4444','< 4.5%'],['#f97316','4.5–6%'],['#f59e0b','6–8%'],['#34d399','8–10%'],['#059669','≥ 10%']],
   commute_minutes: [['#059669','≤ 20 min'],['#34d399','20–30'],['#f59e0b','30–45'],['#f97316','45–60'],['#ef4444','> 60']],
   pct_duplex:      [['#ef4444','< 2%'],['#f97316','2–4%'],['#f59e0b','4–7%'],['#34d399','7–12%'],['#059669','≥ 12%']],
+  bcad_mf_count:   [['#ef4444','< 15'],['#f97316','15–40'],['#f59e0b','40–80'],['#34d399','80–150'],['#059669','≥ 150']],
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -268,13 +271,21 @@ function popupHTML(p) {
         <tr><td style="color:#94a3b8;padding:2px 0">5yr CAGR</td>
             <td style="color:${cagrClass(p.zhvi_cagr_5yr)}">${fmt.cagr(p.zhvi_cagr_5yr)}</td></tr>
         ${p.pct_duplex != null ? `
-        <tr><td colspan="2" style="padding-top:6px;padding-bottom:2px;color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.06em">Housing Stock</td></tr>
+        <tr><td colspan="2" style="padding-top:6px;padding-bottom:2px;color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.06em">Housing Stock (Census)</td></tr>
         <tr><td style="color:#94a3b8;padding:2px 0">SFR</td>
             <td style="color:#93c5fd">${fmt.pct(p.pct_sfr)}</td></tr>
         <tr><td style="color:#94a3b8;padding:2px 0">Duplex (2-unit)</td>
             <td style="color:#6ee7b7">${fmt.pct(p.pct_duplex)}</td></tr>
         <tr><td style="color:#94a3b8;padding:2px 0">Small MF (2–4u)</td>
             <td style="color:#e2e8f0">${fmt.pct(p.pct_small_mf)}</td></tr>` : ''}
+        ${p.bcad_sfr_count != null ? `
+        <tr><td colspan="2" style="padding-top:6px;padding-bottom:2px;color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.06em">BCAD Parcel Inventory</td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">SFR parcels (A1)</td>
+            <td style="color:#93c5fd">${(p.bcad_sfr_count||0).toLocaleString()}<span style="color:#475569;font-size:10px"> · avg ${fmt.usd(p.bcad_sfr_assessed)}</span></td></tr>
+        <tr><td style="color:#94a3b8;padding:2px 0">Small MF parcels (B1)</td>
+            <td style="color:#6ee7b7">${(p.bcad_mf_count||0).toLocaleString()}<span style="color:#475569;font-size:10px"> · avg ${fmt.usd(p.bcad_mf_assessed)}</span></td></tr>
+        ${p.bcad_large_mf_count ? `<tr><td style="color:#94a3b8;padding:2px 0">Apt complexes (B2)</td>
+            <td style="color:#94a3b8">${(p.bcad_large_mf_count||0).toLocaleString()}</td></tr>` : ''}` : ''}
       </table>
       <div style="margin-top:10px;display:flex;gap:10px;font-size:12px">
         <a href="${gmaps}"  target="_blank" class="popup-link">📍 Maps</a>

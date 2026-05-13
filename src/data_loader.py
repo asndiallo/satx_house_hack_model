@@ -15,10 +15,14 @@ from pathlib import Path
 from typing import Optional
 
 from cache_manager import CacheManager
+import json
+
 from config import (
+    BCAD_ARCGIS_URL,
     CACHE_DIR, CACHE_TTL,
     CENSUS_API_KEY, CENSUS_BASE_URL, CENSUS_YEAR,
-    CENSUS_TABLES, SA_CRIME_URL
+    CENSUS_TABLES, SA_CRIME_URL,
+    TARGET_STATE_FIPS,
 )
 
 _cache = CacheManager(CACHE_DIR)
@@ -237,4 +241,75 @@ def load_crime_data() -> pd.DataFrame:
     df = pd.read_csv(cache_path, dtype=str)
     logger.info(f"Crime data loaded: {len(df):,} rows, columns: {df.columns.tolist()}")
     _cache.set("crime_raw_marker", True, source="load_crime_data")
+    return df
+
+
+# ── BCAD Parcel Data ──────────────────────────────────────────────────────────
+
+_SA_AREA_ZIPS_BCAD = (
+    [str(z) for z in range(78201, 78270)]
+    + ["78109", "78148", "78150", "78154", "78266"]
+)
+
+
+def load_bcad_data() -> Optional[pd.DataFrame]:
+    """
+    Fetch BCAD parcel counts and assessed values from the Bexar County ArcGIS
+    REST service — no auth required, single statistics query, cached 30 days.
+
+    Returns a raw DataFrame with one row per (ZIP, State_cd) combination:
+      Zip          — 5-digit ZIP code
+      State_cd     — Texas property type code (A1=SFR, B1=Small MF, B2=Large MF)
+      prop_count   — number of parcels in this ZIP × State_cd group
+      avg_tot_val  — average total assessed value (land + improvements)
+      avg_impr_val — average improvement (structure) value only
+
+    Uses a single ArcGIS GROUP BY statistics query — no pagination needed.
+    """
+    cached = _cache.get("bcad_parcels", ttl_hours=CACHE_TTL["bcad_hours"])
+    if cached is not None:
+        return cached
+
+    logger.info("Fetching BCAD parcel stats from Bexar County ArcGIS REST service...")
+
+    zip_list = "','".join(_SA_AREA_ZIPS_BCAD)
+    out_stats = json.dumps([
+        {"statisticType": "count", "onStatisticField": "OBJECTID",  "outStatisticFieldName": "prop_count"},
+        {"statisticType": "avg",   "onStatisticField": "TotVal",    "outStatisticFieldName": "avg_tot_val"},
+        {"statisticType": "avg",   "onStatisticField": "ImprVal",   "outStatisticFieldName": "avg_impr_val"},
+    ])
+    params = {
+        "where": f"Zip IN ('{zip_list}')",
+        "groupByFieldsForStatistics": "Zip,State_cd",
+        "outStatistics": out_stats,
+        "f": "json",
+    }
+
+    try:
+        resp = requests.get(BCAD_ARCGIS_URL, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning(f"BCAD fetch failed (non-fatal — pipeline continues without it): {exc}")
+        return None
+
+    if "error" in data:
+        logger.warning(f"BCAD ArcGIS error: {data['error']} — skipping")
+        return None
+
+    features = data.get("features", [])
+    if not features:
+        logger.warning("BCAD returned 0 features — skipping")
+        return None
+
+    rows = [f["attributes"] for f in features]
+    df = pd.DataFrame(rows)
+    df = df.rename(columns={"Zip": "zip"})
+    df["zip"] = df["zip"].astype(str).str.zfill(5)
+
+    logger.info(
+        f"BCAD: {len(df)} ZIP×State_cd groups | "
+        f"{df['prop_count'].sum():,.0f} total parcels across {df['zip'].nunique()} ZIPs"
+    )
+    _cache.set("bcad_parcels", df, source="load_bcad_data")
     return df

@@ -386,6 +386,57 @@ def process_crime(
     return result
 
 
+# ── BCAD ─────────────────────────────────────────────────────────────────────
+
+
+def process_bcad(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pivot BCAD parcel stats (one row per ZIP × State_cd) into ZIP-level columns.
+
+    Texas property type codes used here:
+      A1 = Single Family Residential — room-hack target
+      B1 = Multifamily Residential (duplexes, triplexes, fourplexes, small apts) — unit-hack target
+      B2 = Large Multifamily (5+ unit complexes) — not a house-hack target
+
+    Output columns per ZIP:
+      bcad_sfr_count      — A1 parcel count
+      bcad_sfr_assessed   — A1 average assessed value (land + structure)
+      bcad_mf_count       — B1 parcel count (small MF, primary unit-hack candidates)
+      bcad_mf_assessed    — B1 average assessed value
+      bcad_large_mf_count — B2 parcel count (apartment complexes, for context)
+    """
+    df = df.copy()
+    df["State_cd"] = df["State_cd"].astype(str).str.strip().str.upper()
+
+    def _agg(state_code: str, count_col: str, val_col: str) -> pd.DataFrame:
+        sub = df[df["State_cd"] == state_code].copy()
+        if sub.empty:
+            return pd.DataFrame(columns=["zip", count_col, val_col])
+        sub["avg_tot_val"] = pd.to_numeric(sub["avg_tot_val"], errors="coerce")
+        counts = sub[["zip", "prop_count"]].rename(columns={"prop_count": count_col})
+        vals   = sub[["zip", "avg_tot_val"]].rename(columns={"avg_tot_val": val_col})
+        return counts.merge(vals, on="zip", how="left")
+
+    sfr   = _agg("A1", "bcad_sfr_count",      "bcad_sfr_assessed")
+    mf    = _agg("B1", "bcad_mf_count",        "bcad_mf_assessed")
+    large = df[df["State_cd"] == "B2"][["zip", "prop_count"]].rename(
+        columns={"prop_count": "bcad_large_mf_count"}
+    )
+
+    result = sfr.merge(mf, on="zip", how="outer").merge(large, on="zip", how="outer")
+
+    for col in ["bcad_sfr_count", "bcad_mf_count", "bcad_large_mf_count"]:
+        if col in result.columns:
+            result[col] = pd.to_numeric(result[col], errors="coerce").fillna(0).astype(int)
+
+    logger.info(
+        f"BCAD processed: {len(result)} ZIPs | "
+        f"total SFR parcels: {result['bcad_sfr_count'].sum():,.0f} | "
+        f"total small-MF parcels: {result['bcad_mf_count'].sum():,.0f}"
+    )
+    return result
+
+
 # ── Merge ─────────────────────────────────────────────────────────────────────
 
 
@@ -397,6 +448,7 @@ def merge_datasets(
     commute: pd.DataFrame,
     stability: pd.DataFrame = None,
     cagr: pd.DataFrame = None,
+    bcad: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Inner-join all processed DataFrames on ZIP.
@@ -433,6 +485,12 @@ def merge_datasets(
         logger.info(
             f"CAGR merged (left join): {n_filled}/{len(base)} ZIPs have CAGR data"
         )
+
+    # BCAD is display-only — left join so pipeline runs even without parcel data
+    if bcad is not None:
+        base = base.merge(bcad, on="zip", how="left")
+        n_filled = base["bcad_sfr_count"].notna().sum() if "bcad_sfr_count" in base.columns else 0
+        logger.info(f"BCAD merged (left join): {n_filled}/{len(base)} ZIPs have parcel data")
 
     # Population was only needed for crime normalization — drop from final dataset
     if "population" in base.columns:
