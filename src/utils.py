@@ -9,8 +9,10 @@ import logging
 import sys
 import zipfile
 from pathlib import Path
+from typing import Optional
 import pandas as pd
 import requests
+from tqdm import tqdm
 
 from cache_manager import CacheManager
 from config import CACHE_DIR, CACHE_TTL
@@ -22,6 +24,80 @@ _GAZETTEER_URL = (
     "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/"
     "2024_Gazetteer/2024_Gaz_zcta_national.zip"
 )
+
+
+def download_file(
+    url: str,
+    dest: Path,
+    desc: Optional[str] = None,
+    headers: Optional[dict] = None,
+    timeout=(30, 600),
+    chunk_size: int = 256 * 1024,
+) -> int:
+    """
+    Stream a URL to disk with a tqdm progress bar. Atomic: writes to a .tmp
+    file and renames on success so a failed download never corrupts the cache.
+    Returns bytes written.
+    """
+    dest = Path(dest)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    resp = requests.get(url, headers=headers, stream=True, timeout=timeout, allow_redirects=True)
+    resp.raise_for_status()
+    total = int(resp.headers.get("content-length", 0)) or None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    bytes_written = 0
+    try:
+        with (
+            open(tmp, "wb") as fh,
+            tqdm(
+                total=total,
+                desc=desc or dest.name,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                dynamic_ncols=True,
+                miniters=1,
+            ) as bar,
+        ):
+            for chunk in resp.iter_content(chunk_size=chunk_size):
+                fh.write(chunk)
+                bytes_written += len(chunk)
+                bar.update(len(chunk))
+        tmp.replace(dest)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink()
+        raise
+    return bytes_written
+
+
+def fetch_bytes(
+    url: str,
+    desc: Optional[str] = None,
+    headers: Optional[dict] = None,
+    timeout: int = 60,
+) -> bytes:
+    """
+    Fetch a URL into memory with a tqdm progress bar. Use for smaller files
+    (Zillow CSVs, ZIP centroid archives) where streaming to disk is overkill.
+    """
+    resp = requests.get(url, headers=headers, stream=True, timeout=timeout, allow_redirects=True)
+    resp.raise_for_status()
+    total = int(resp.headers.get("content-length", 0)) or None
+    chunks: list[bytes] = []
+    with tqdm(
+        total=total,
+        desc=desc or url.rsplit("/", 1)[-1],
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        dynamic_ncols=True,
+        miniters=1,
+    ) as bar:
+        for chunk in resp.iter_content(chunk_size=256 * 1024):
+            chunks.append(chunk)
+            bar.update(len(chunk))
+    return b"".join(chunks)
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -75,10 +151,9 @@ def load_zip_centroids(filepath: Path = None) -> pd.DataFrame:
         return cached
 
     logger.info("Fetching ZIP centroids from Census ZCTA Gazetteer...")
-    resp = requests.get(_GAZETTEER_URL, timeout=60)
-    resp.raise_for_status()
+    raw_bytes = fetch_bytes(_GAZETTEER_URL, desc="ZIP centroids")
 
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
         txt_name = next(n for n in zf.namelist() if n.endswith(".txt"))
         with zf.open(txt_name) as f:
             raw = pd.read_csv(f, sep="\t", dtype={"GEOID": str})

@@ -17,6 +17,7 @@ from typing import Optional
 from cache_manager import CacheManager
 import json
 
+from utils import download_file, fetch_bytes
 from config import (
     BCAD_ARCGIS_URL,
     CACHE_DIR, CACHE_TTL,
@@ -30,7 +31,7 @@ _cache = CacheManager(CACHE_DIR)
 logger = logging.getLogger(__name__)
 
 # Bump this key whenever CENSUS_TABLES changes — ensures stale caches auto-invalidate.
-_CENSUS_CACHE_KEY = "census_acs_v2"
+_CENSUS_CACHE_KEY = "census_acs_v3"
 
 # Browser-like headers — SA Open Data portal (and many gov sites) return 403
 # when they detect Python's default urllib user-agent string.
@@ -75,9 +76,8 @@ def load_zhvi() -> pd.DataFrame:
         return cached
 
     logger.info("Fetching ZHVI from Zillow research endpoint...")
-    resp = requests.get(_ZHVI_URL, headers=_ZILLOW_HEADERS, timeout=60)
-    resp.raise_for_status()
-    df = pd.read_csv(io.BytesIO(resp.content), dtype={"RegionName": str})
+    data = fetch_bytes(_ZHVI_URL, desc="ZHVI", headers=_ZILLOW_HEADERS)
+    df = pd.read_csv(io.BytesIO(data), dtype={"RegionName": str})
     logger.info(f"ZHVI fetched: {len(df):,} rows")
     _cache.set("zillow_zhvi", df, source="load_zhvi")
     return df
@@ -93,9 +93,8 @@ def load_zori() -> pd.DataFrame:
         return cached
 
     logger.info("Fetching ZORI from Zillow research endpoint...")
-    resp = requests.get(_ZORI_URL, headers=_ZILLOW_HEADERS, timeout=60)
-    resp.raise_for_status()
-    df = pd.read_csv(io.BytesIO(resp.content), dtype={"RegionName": str})
+    data = fetch_bytes(_ZORI_URL, desc="ZORI", headers=_ZILLOW_HEADERS)
+    df = pd.read_csv(io.BytesIO(data), dtype={"RegionName": str})
     logger.info(f"ZORI fetched: {len(df):,} rows")
     _cache.set("zillow_zori", df, source="load_zori")
     return df
@@ -112,9 +111,8 @@ def load_zhvf() -> Optional[pd.DataFrame]:
 
     logger.info("Fetching ZHVF from Zillow research endpoint...")
     try:
-        resp = requests.get(_ZHVF_URL, headers=_ZILLOW_HEADERS, timeout=60)
-        resp.raise_for_status()
-        df = pd.read_csv(io.BytesIO(resp.content), dtype={"RegionName": str})
+        data = fetch_bytes(_ZHVF_URL, desc="ZHVF", headers=_ZILLOW_HEADERS)
+        df = pd.read_csv(io.BytesIO(data), dtype={"RegionName": str})
         logger.info(f"ZHVF fetched: {len(df):,} rows")
         _cache.set("zillow_zhvf", df, source="load_zhvf")
         return df
@@ -199,29 +197,17 @@ def load_crime_data() -> pd.DataFrame:
     if cache_path.exists():
         logger.info("Crime cache TTL expired — re-downloading fresh data")
 
-    logger.info("Downloading SAPD CFS data (~600MB, this will take 30-90s)...")
-    logger.info(f"Source: {SA_CRIME_URL}")
+    logger.info(f"Downloading SAPD CFS data (~600MB): {SA_CRIME_URL}")
 
     try:
-        response = requests.get(
+        mb = download_file(
             SA_CRIME_URL,
+            cache_path,
+            desc="SAPD crime data",
             headers=_HEADERS,
-            stream=True,
-            timeout=120,
-            allow_redirects=True,
-        )
-        response.raise_for_status()
-
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        bytes_written = 0
-        with open(cache_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
-                bytes_written += len(chunk)
-
-        mb = bytes_written / (1024 * 1024)
-        logger.info(f"Download complete: {mb:.1f} MB written to {cache_path}")
-
+            timeout=(30, 600),
+        ) / (1024 * 1024)
+        logger.info(f"Download complete: {mb:.1f} MB → {cache_path}")
     except requests.HTTPError as e:
         raise RuntimeError(
             f"HTTP {e.response.status_code} downloading crime data.\n\n"
@@ -231,12 +217,14 @@ def load_crime_data() -> pd.DataFrame:
             f"  3. Save file to: {cache_path}\n"
             "  4. Re-run the pipeline -- it will use the cached file."
         ) from e
-
-    except requests.Timeout:
+    except (requests.ConnectionError, requests.Timeout) as e:
         raise RuntimeError(
-            f"Download timed out after 120s. Try again on a faster connection,\n"
-            f"or download manually and save to: {cache_path}"
-        )
+            f"Crime data download failed ({type(e).__name__}). "
+            "Check your connection and retry, or download manually:\n"
+            "  1. Open: https://data.sanantonio.gov/dataset/sapd-calls-for-service\n"
+            "  2. Click Download -> CSV\n"
+            f"  3. Save to: {cache_path}"
+        ) from e
 
     df = pd.read_csv(cache_path, dtype=str)
     logger.info(f"Crime data loaded: {len(df):,} rows, columns: {df.columns.tolist()}")
@@ -338,22 +326,13 @@ def load_permit_data() -> Optional[pd.DataFrame]:
 
     logger.info("Downloading SA building permits (~20 MB)...")
     try:
-        resp = requests.get(
+        mb = download_file(
             SA_PERMITS_URL,
+            _PERMITS_CACHE_PATH,
+            desc="SA permits",
             headers=_HEADERS,
-            stream=True,
-            timeout=120,
-        )
-        resp.raise_for_status()
-
-        _PERMITS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        bytes_written = 0
-        with open(_PERMITS_CACHE_PATH, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
-                bytes_written += len(chunk)
-
-        mb = bytes_written / (1024 * 1024)
+            timeout=(30, 120),
+        ) / (1024 * 1024)
         logger.info(f"Permits download complete: {mb:.1f} MB → {_PERMITS_CACHE_PATH}")
     except Exception as exc:
         if _PERMITS_CACHE_PATH.exists():
@@ -363,6 +342,7 @@ def load_permit_data() -> Optional[pd.DataFrame]:
             return None
 
     _cache.set("permits_marker", True, source="load_permit_data")
+    _cache.invalidate("permits_processed")  # force reprocessing on next pipeline run
     df = pd.read_csv(_PERMITS_CACHE_PATH, dtype=str, low_memory=False)
     logger.info(f"Permits loaded: {len(df):,} rows")
     return df

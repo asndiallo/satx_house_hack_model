@@ -1,6 +1,7 @@
 pandas
 numpy
 requests
+tqdm
 geopy
 python-dotenv
 jupyter
