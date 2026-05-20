@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 # ── Project Paths ─────────────────────────────────────────────────────────────
@@ -24,14 +25,14 @@ CACHE_DIR = ROOT_DIR / ".cache"
 
 # ── Cache TTLs ────────────────────────────────────────────────────────────────
 CACHE_TTL = {
-    "census_hours": 720,    # 30 days — ACS is annual data, no point re-fetching
-    "crime_hours": 168,     # 7 days — SA Open Data portal updates frequently
+    "census_hours": 720,  # 30 days — ACS is annual data, no point re-fetching
+    "crime_hours": 720,  # 30 days — ZIP-level crime rankings are stable month-to-month
     "commute_hours": 8760,  # 1 year — drive times to BAMC are effectively static
-    "zillow_hours": 168,    # 7 days — Zillow publishes monthly updates
-    "zhvf_hours": 168,      # 7 days — ZHVF forecast refreshes monthly
-    "uszips_hours": 8760,   # 1 year — ZIP centroids never change
-    "bcad_hours": 720,      # 30 days — BCAD assessed values update annually
-    "permits_hours": 168,   # 7 days — SA permits portal refreshes frequently
+    "zillow_hours": 168,  # 7 days — Zillow publishes monthly updates
+    "zhvf_hours": 168,  # 7 days — ZHVF forecast refreshes monthly
+    "uszips_hours": 8760,  # 1 year — ZIP centroids never change
+    "bcad_hours": 720,  # 30 days — BCAD assessed values update annually
+    "permits_hours": 168,  # 7 days — SA permits portal refreshes frequently
 }
 
 # ── Duty Station ──────────────────────────────────────────────────────────────
@@ -94,23 +95,23 @@ assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 # Anything here is a SCREEN, not a scored dimension.
 # Path B principle: if you won't compromise on it, make it a filter.
 THRESHOLDS = {
-    # Lowered from 0.045 to 0.035 to include multifamily house hack candidates.
-    # SFH room hack at median ZORI/price yields ~6% (passes 4.5% easily).
-    # Duplex house hack yields ~4.3% in Phase 1 (one rented unit, higher asset price)
-    # and ~8.6% in Phase 2 (full rental) — a sound investment that 4.5% would reject.
-    # 3.5% still screens out ZIPs with genuinely weak rental fundamentals.
-    "min_rent_to_price": 0.035,
+    # SFH room hack at median ZORI yields ~6% in SA — comfortably above this floor.
+    # 4.5% screens out ZIPs with genuinely weak rental fundamentals while keeping
+    # every ZIP that can support a viable 3BR room hack.
+    "min_rent_to_price": 0.045,
     # SA 2026 conforming VA loan limit — adjust if your COE differs
     "max_home_value": 450_000,
-    # Lowered to 0.35 for multifamily house hack strategy (live in one unit, rent
-    # others, then fully vacate after ~1 year). Rental-dense neighborhoods (35–50%
-    # owner-occ) often have the strongest multifamily inventory and tenant demand —
-    # exactly what you need for the property to self-fund after you PCS/move on.
-    "min_owner_occ_pct": 0.35,
-    # Above 85% = low rental demand; finding tenants will be hard.
-    # Raised from 0.80: highly owner-occupied suburban ZIPs near BAMC were being
-    # excluded even though they offer strong appreciation and low crime.
+    # SFH room hack: tenants share your home — you need a stable, owner-occupied
+    # neighborhood, not a rental-dense corridor. 50% is the right floor: below this,
+    # the ZIP skews toward transient rental stock and the neighborhood character
+    # changes in ways that matter when you live there full-time.
+    "min_owner_occ_pct": 0.50,
+    # Above 85% = low rental demand; finding room tenants will be hard.
     "max_owner_occ_pct": 0.85,
+    # Minimum SFR share of housing stock (Census B25024).
+    # ZIPs below 40% SFR are dominated by apartments/condos where 3BR SFRs are
+    # scarce and hard to source at a reasonable price.
+    "min_pct_sfr": 0.40,
     # Tenant base quality screen — low income correlates with:
     # higher delinquency risk, slower resale, weaker neighborhood trajectory
     # $42k = roughly E-5/E-6 BAH + base pay range in SA — your target tenant
@@ -119,9 +120,10 @@ THRESHOLDS = {
 
 # ── Crime Filtering ───────────────────────────────────────────────────────────
 # Path B: crime is a hard screen, not a soft negotiable.
-# 0.45 = keep only the safest 45% of ZIPs by crime rate, where "safe" means "lower crime than 45% of other ZIPs".
-# You live in this property. This is not tradeable against yield.
-CRIME_PERCENTILE_CUTOFF = 0.45
+# 0.50 = keep only the safest half of ZIPs. SFH room hack raises the bar vs. a
+# duplex: you share walls and common areas with tenants — neighborhood safety is
+# non-negotiable in a way that doesn't trade against yield.
+CRIME_PERCENTILE_CUTOFF = 0.50
 
 # Minimum population for a ZIP to get a crime per-1k rate.
 # Without this floor, commercial corridors and fringe ZIPs with low Census-enumerated
@@ -308,19 +310,11 @@ CENSUS_TABLES = {
     "renter_3bed": "B25042_005E",
     "renter_4bed": "B25042_006E",
     "renter_5bed": "B25042_007E",  # 5+ bedrooms
-    # B25024: Units in structure — housing stock composition by building type.
-    # Used to compute pct_sfr, pct_duplex, pct_small_mf per ZIP.
-    # Tells you where duplexes / small MF properties actually exist —
-    # critical for comparing room-hack (SFR) vs unit-hack (duplex/triplex) viability.
-    "units_total":  "B25024_001E",  # all housing units
-    "units_1det":   "B25024_002E",  # 1-unit, detached (SFR)
-    "units_1att":   "B25024_003E",  # 1-unit, attached (townhouse/rowhouse)
-    "units_2":      "B25024_004E",  # 2-unit buildings (duplex)
-    "units_3_4":    "B25024_005E",  # 3–4 unit buildings
-    "units_5_9":    "B25024_006E",  # 5–9 unit buildings
-    "units_10_19":  "B25024_007E",  # 10–19 unit buildings
-    "units_20_49":  "B25024_008E",  # 20–49 unit buildings
-    "units_50plus": "B25024_009E",  # 50+ unit buildings (large apartment complex)
+    # B25024: Units in structure — used to compute pct_sfr per ZIP.
+    # pct_sfr = (units_1det + units_1att) / units_total — SFH inventory density signal.
+    "units_total": "B25024_001E",  # all housing units
+    "units_1det": "B25024_002E",  # 1-unit, detached (SFR)
+    "units_1att": "B25024_003E",  # 1-unit, attached (townhouse/rowhouse)
 }
 CENSUS_BASE_URL = "https://api.census.gov/data"
 

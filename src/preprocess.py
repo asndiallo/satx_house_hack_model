@@ -11,7 +11,10 @@ import re
 import numpy as np
 import pandas as pd
 
+from cache_manager import CacheManager
 from config import (
+    CACHE_DIR,
+    CACHE_TTL,
     MIN_POPULATION_FOR_CRIME,
     NON_SAPD_ZIPS,
     TARGET_BEDROOMS,
@@ -23,6 +26,8 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_cache = CacheManager(CACHE_DIR)
 
 
 # ── Zillow ────────────────────────────────────────────────────────────────────
@@ -190,12 +195,6 @@ def process_census(df: pd.DataFrame) -> pd.DataFrame:
         "units_total",
         "units_1det",
         "units_1att",
-        "units_2",
-        "units_3_4",
-        "units_5_9",
-        "units_10_19",
-        "units_20_49",
-        "units_50plus",
     ]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -240,33 +239,21 @@ def process_census(df: pd.DataFrame) -> pd.DataFrame:
             f"{df['avg_renter_bedrooms'].max():.2f}"
         )
 
-    # Compute housing type percentages from B25024 (Units in Structure).
-    # pct_sfr      = SFR (detached + attached) share — room-hack candidate density
-    # pct_duplex   = 2-unit share — most common unit-hack target
-    # pct_small_mf = 2–4 unit share — all small MF house-hack targets combined
-    b25024_required = ["units_total", "units_1det", "units_1att", "units_2", "units_3_4"]
+    # Compute SFR share from B25024 (Units in Structure).
+    # pct_sfr = (detached + attached SFR) / total units — SFH inventory density.
+    b25024_required = ["units_total", "units_1det", "units_1att"]
     if all(c in df.columns for c in b25024_required):
         valid = df["units_total"] > 0
         df["pct_sfr"] = np.nan
-        df["pct_duplex"] = np.nan
-        df["pct_small_mf"] = np.nan
         df.loc[valid, "pct_sfr"] = (
             (df.loc[valid, "units_1det"] + df.loc[valid, "units_1att"])
             / df.loc[valid, "units_total"]
         )
-        df.loc[valid, "pct_duplex"] = (
-            df.loc[valid, "units_2"] / df.loc[valid, "units_total"]
-        )
-        df.loc[valid, "pct_small_mf"] = (
-            (df.loc[valid, "units_2"] + df.loc[valid, "units_3_4"])
-            / df.loc[valid, "units_total"]
-        )
         n = valid.sum()
         logger.info(
-            f"Housing mix (B25024): {n} ZIPs | "
-            f"sfr median: {df['pct_sfr'].median():.1%} | "
-            f"duplex median: {df['pct_duplex'].median():.1%} | "
-            f"small-MF median: {df['pct_small_mf'].median():.1%}"
+            f"SFR share (B25024): {n} ZIPs | "
+            f"median: {df['pct_sfr'].median():.1%} | "
+            f"range: {df['pct_sfr'].min():.1%} – {df['pct_sfr'].max():.1%}"
         )
 
     keep = ["zip", "owner_occ_pct", "median_hh_income"]
@@ -274,9 +261,8 @@ def process_census(df: pd.DataFrame) -> pd.DataFrame:
         keep.append("population")
     if "avg_renter_bedrooms" in df.columns:
         keep.append("avg_renter_bedrooms")
-    for col in ["pct_sfr", "pct_duplex", "pct_small_mf"]:
-        if col in df.columns:
-            keep.append(col)
+    if "pct_sfr" in df.columns:
+        keep.append("pct_sfr")
 
     result = df[keep]
     logger.info(f"Census: {len(result)} ZIPs after processing")
@@ -398,19 +384,19 @@ def process_permits(df: pd.DataFrame) -> pd.DataFrame:
     + issued within the trailing 12 months.
 
     Unit type classification — groups permits by address, sums unit counts:
-      sfr       — 1 unit at address  (detached SFR, typical subdivision home)
-      duplex    — 2 units at address (duplex filed as one or two permits)
-      small_mf  — 3–4 units at address (triplex / fourplex)
-      large_mf  — 5+ units at address (small apartment, often condo tower phase)
+      sfr      — 1 unit at address (detached SFR)
+      large_mf — 5+ units (apartment complexes — rental supply signal for Phase 2)
+      other    — 2–4 units (not counted separately; included in total only)
 
     Output columns per ZIP (0 when no activity):
-      permit_sfr_12mo       — new SFR addresses permitted
-      permit_duplex_12mo    — new 2-unit addresses permitted
-      permit_small_mf_12mo  — new 3–4 unit addresses permitted
-      permit_large_mf_12mo  — new 5+ unit addresses permitted
-      permit_mf_12mo        — duplex + small_mf combined (unit-hack supply signal)
-      permit_total_12mo     — all residential new construction
+      permit_sfr_12mo      — new SFR addresses permitted
+      permit_large_mf_12mo — new apartment buildings permitted (5+u)
+      permit_total_12mo    — all new residential construction
     """
+    cached = _cache.get("permits_processed", ttl_hours=CACHE_TTL["permits_hours"])
+    if cached is not None:
+        return cached
+
     df = df.copy()
 
     # Filter to new residential construction only
@@ -463,9 +449,8 @@ def process_permits(df: pd.DataFrame) -> pd.DataFrame:
 
     def _classify(n: int) -> str:
         if n <= 1: return "sfr"
-        if n == 2: return "duplex"
-        if n <= 4: return "small_mf"
-        return "large_mf"
+        if n >= 5: return "large_mf"
+        return "other"  # 2–4 units — not a SFH target, counted in total only
 
     bldg["unit_type"] = bldg["total_units"].apply(_classify)
 
@@ -478,28 +463,24 @@ def process_permits(df: pd.DataFrame) -> pd.DataFrame:
         bldg.groupby(["zip", "unit_type"])
         .size()
         .unstack(fill_value=0)
-        .reindex(columns=["sfr", "duplex", "small_mf", "large_mf"], fill_value=0)
+        .reindex(columns=["sfr", "large_mf", "other"], fill_value=0)
         .reset_index()
     )
 
     pivot = pivot.rename(columns={
         "sfr":      "permit_sfr_12mo",
-        "duplex":   "permit_duplex_12mo",
-        "small_mf": "permit_small_mf_12mo",
         "large_mf": "permit_large_mf_12mo",
     })
-    pivot["permit_mf_12mo"]    = pivot["permit_duplex_12mo"] + pivot["permit_small_mf_12mo"]
-    pivot["permit_total_12mo"] = pivot[
-        ["permit_sfr_12mo", "permit_duplex_12mo", "permit_small_mf_12mo", "permit_large_mf_12mo"]
-    ].sum(axis=1)
+    pivot["permit_total_12mo"] = pivot[["permit_sfr_12mo", "permit_large_mf_12mo", "other"]].sum(axis=1)
+    pivot = pivot.drop(columns=["other"])
 
     n_zips = len(pivot)
     logger.info(
         f"Permits (trailing 12mo): {bldg.shape[0]} buildings across {n_zips} SA ZIPs | "
         f"SFR: {pivot['permit_sfr_12mo'].sum()} | "
-        f"Duplex: {pivot['permit_duplex_12mo'].sum()} | "
-        f"SmallMF: {pivot['permit_small_mf_12mo'].sum()}"
+        f"Large MF (5+u): {pivot['permit_large_mf_12mo'].sum()}"
     )
+    _cache.set("permits_processed", pivot, source="process_permits")
     return pivot
 
 
@@ -508,48 +489,33 @@ def process_permits(df: pd.DataFrame) -> pd.DataFrame:
 
 def process_bcad(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Pivot BCAD parcel stats (one row per ZIP × State_cd) into ZIP-level columns.
+    Pivot BCAD parcel stats into ZIP-level SFR columns.
 
-    Texas property type codes used here:
-      A1 = Single Family Residential — room-hack target
-      B1 = Multifamily Residential (duplexes, triplexes, fourplexes, small apts) — unit-hack target
-      B2 = Large Multifamily (5+ unit complexes) — not a house-hack target
+    Texas property type code used here:
+      A1 = Single Family Residential — the target property type
 
     Output columns per ZIP:
-      bcad_sfr_count      — A1 parcel count
-      bcad_sfr_assessed   — A1 average assessed value (land + structure)
-      bcad_mf_count       — B1 parcel count (small MF, primary unit-hack candidates)
-      bcad_mf_assessed    — B1 average assessed value
-      bcad_large_mf_count — B2 parcel count (apartment complexes, for context)
+      bcad_sfr_count    — A1 parcel count (SFR inventory depth)
+      bcad_sfr_assessed — A1 average assessed value (land + structure)
     """
     df = df.copy()
     df["State_cd"] = df["State_cd"].astype(str).str.strip().str.upper()
 
-    def _agg(state_code: str, count_col: str, val_col: str) -> pd.DataFrame:
-        sub = df[df["State_cd"] == state_code].copy()
-        if sub.empty:
-            return pd.DataFrame(columns=["zip", count_col, val_col])
-        sub["avg_tot_val"] = pd.to_numeric(sub["avg_tot_val"], errors="coerce")
-        counts = sub[["zip", "prop_count"]].rename(columns={"prop_count": count_col})
-        vals   = sub[["zip", "avg_tot_val"]].rename(columns={"avg_tot_val": val_col})
-        return counts.merge(vals, on="zip", how="left")
+    sfr = df[df["State_cd"] == "A1"].copy()
+    if sfr.empty:
+        logger.warning("BCAD: no A1 (SFR) records found")
+        return pd.DataFrame(columns=["zip", "bcad_sfr_count", "bcad_sfr_assessed"])
 
-    sfr   = _agg("A1", "bcad_sfr_count",      "bcad_sfr_assessed")
-    mf    = _agg("B1", "bcad_mf_count",        "bcad_mf_assessed")
-    large = df[df["State_cd"] == "B2"][["zip", "prop_count"]].rename(
-        columns={"prop_count": "bcad_large_mf_count"}
+    sfr["avg_tot_val"] = pd.to_numeric(sfr["avg_tot_val"], errors="coerce")
+    result = (
+        sfr[["zip", "prop_count", "avg_tot_val"]]
+        .rename(columns={"prop_count": "bcad_sfr_count", "avg_tot_val": "bcad_sfr_assessed"})
     )
-
-    result = sfr.merge(mf, on="zip", how="outer").merge(large, on="zip", how="outer")
-
-    for col in ["bcad_sfr_count", "bcad_mf_count", "bcad_large_mf_count"]:
-        if col in result.columns:
-            result[col] = pd.to_numeric(result[col], errors="coerce").fillna(0).astype(int)
+    result["bcad_sfr_count"] = pd.to_numeric(result["bcad_sfr_count"], errors="coerce").fillna(0).astype(int)
 
     logger.info(
         f"BCAD processed: {len(result)} ZIPs | "
-        f"total SFR parcels: {result['bcad_sfr_count'].sum():,.0f} | "
-        f"total small-MF parcels: {result['bcad_mf_count'].sum():,.0f}"
+        f"total SFR parcels: {result['bcad_sfr_count'].sum():,.0f}"
     )
     return result
 

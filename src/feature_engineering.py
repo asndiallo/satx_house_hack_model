@@ -114,6 +114,16 @@ def apply_hard_filters(df: pd.DataFrame) -> pd.DataFrame:
     else:
         logger.warning("median_hh_income not in dataset — income filter skipped")
 
+    # SFR inventory filter — ZIPs below the floor are dominated by apartments/condos
+    # where sourcing a 3BR SFR at target price is structurally difficult.
+    if "pct_sfr" in df.columns and "min_pct_sfr" in THRESHOLDS:
+        sfr_series = pd.to_numeric(df["pct_sfr"], errors="coerce")
+        filters["min_pct_sfr"] = (
+            sfr_series >= THRESHOLDS["min_pct_sfr"]
+        ) | sfr_series.isna()  # skip filter if Census data gap
+    elif "min_pct_sfr" in THRESHOLDS:
+        logger.warning("pct_sfr not in dataset — SFR inventory filter skipped")
+
     mask = pd.Series(True, index=df.index)
     for name, condition in filters.items():
         failed = (~condition).sum()
