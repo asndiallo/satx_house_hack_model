@@ -65,6 +65,16 @@
   </button>
 </header>
 
+<!-- ── Pipeline log panel ───────────────────────────────────────────────── -->
+<div id="pipeline-panel" class="hidden mx-6 mt-3 rounded-lg border border-slate-700 bg-slate-900 overflow-hidden">
+  <div class="flex items-center justify-between px-3 py-1.5 border-b border-slate-700 bg-slate-800/60">
+    <span id="pipeline-status" class="text-xs font-mono text-slate-400">Running pipeline…</span>
+    <button id="btn-close-log" class="text-slate-500 hover:text-slate-300 text-xs px-1">✕</button>
+  </div>
+  <pre id="pipeline-log"
+    class="text-xs font-mono text-slate-300 px-3 py-2 max-h-64 overflow-y-auto whitespace-pre-wrap leading-5"></pre>
+</div>
+
 <!-- ── Stats bar ─────────────────────────────────────────────────────────── -->
 <div id="stats-bar" class="px-6 pt-4 pb-2 grid grid-cols-2 sm:grid-cols-4 gap-3"></div>
 
@@ -108,7 +118,7 @@
           <th class="px-3 py-2.5" data-col="owner_occ_pct">Own%</th>
           <th class="px-3 py-2.5" data-col="zhvi_cagr_5yr">5yr CAGR</th>
           <th class="px-3 py-2.5" data-col="median_hh_income">HH Income</th>
-          <th class="px-3 py-2.5" data-col="pct_small_mf" title="Housing stock mix — bar: SFR (blue) / Duplex (green) / 3–4u (amber) / 5+u (gray). Number shows duplex %.">Mix</th>
+          <th class="px-3 py-2.5" data-col="pct_sfr" title="SFR share of housing stock — higher means more single-family homes in this ZIP.">SFR%</th>
           <th class="px-3 py-2.5 rounded-tr-lg" data-col="final_score">Score</th>
         </tr>
       </thead>
@@ -125,10 +135,8 @@
     <span><span class="inline-block w-2 h-2 rounded-sm bg-blue-500 mr-1"></span>Owner-occ 25%</span>
     <span><span class="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1"></span>Commute 15%</span>
     <span><span class="inline-block w-2 h-2 rounded-sm bg-purple-500 mr-1"></span>Stability 10%</span>
-    <span><span class="inline-block w-2 h-2 rounded-sm bg-blue-500 mr-1"></span>Mix: SFR</span>
-    <span><span class="inline-block w-2 h-2 rounded-sm bg-emerald-500 mr-1"></span>Duplex</span>
-    <span><span class="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1"></span>3–4u</span>
-    <span><span class="inline-block w-2 h-2 rounded-sm bg-slate-500 mr-1"></span>5+u</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-blue-500 mr-1"></span>SFR%: SFR stock</span>
+    <span><span class="inline-block w-2 h-2 rounded-sm bg-slate-500 mr-1"></span>Other</span>
     <span class="ml-auto text-slate-600">Click any row to locate on map ↗</span>
   </div>
 </div>
@@ -142,9 +150,8 @@
       <button data-metric="crime_per_1k"     class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Crime</button>
       <button data-metric="rent_to_price"    class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Yield</button>
       <button data-metric="commute_minutes"  class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Drive</button>
-      <button data-metric="pct_duplex"       class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">Duplex%</button>
-      <button data-metric="bcad_mf_count"    class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">MF Stock</button>
-      <button data-metric="permit_mf_12mo"  class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">New MF</button>
+      <button data-metric="pct_sfr"           class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">SFR%</button>
+      <button data-metric="permit_sfr_12mo"  class="metric-btn px-2 py-1 rounded border border-slate-700 text-slate-400">New SFR</button>
     </div>
     <span id="map-status" class="ml-auto text-xs text-slate-500"></span>
   </div>
@@ -186,9 +193,8 @@ const METRIC_COLOR = {
   crime_per_1k:    v => !v ? '#374151' : v <= 100 ? '#059669' : v <= 300 ? '#34d399' : v <= 500 ? '#f59e0b' : v <= 700 ? '#f97316' : '#ef4444',
   rent_to_price:   v => !v ? '#374151' : v >= 0.10 ? '#059669' : v >= 0.08 ? '#34d399' : v >= 0.06 ? '#f59e0b' : v >= 0.045 ? '#f97316' : '#ef4444',
   commute_minutes: v => !v ? '#374151' : v <= 20 ? '#059669' : v <= 30 ? '#34d399' : v <= 45 ? '#f59e0b' : v <= 60 ? '#f97316' : '#ef4444',
-  pct_duplex:      v => !v ? '#374151' : v >= 0.12 ? '#059669' : v >= 0.07 ? '#34d399' : v >= 0.04 ? '#f59e0b' : v >= 0.02 ? '#f97316' : '#ef4444',
-  bcad_mf_count:   v => !v ? '#374151' : v >= 150 ? '#059669' : v >= 80 ? '#34d399' : v >= 40 ? '#f59e0b' : v >= 15 ? '#f97316' : '#ef4444',
-  permit_mf_12mo:  v => v == null ? '#374151' : v >= 15 ? '#059669' : v >= 8 ? '#34d399' : v >= 4 ? '#f59e0b' : v >= 1 ? '#f97316' : '#64748b',
+  pct_sfr:          v => !v ? '#374151' : v >= 0.70 ? '#059669' : v >= 0.55 ? '#34d399' : v >= 0.40 ? '#f59e0b' : v >= 0.25 ? '#f97316' : '#ef4444',
+  permit_sfr_12mo:  v => v == null ? '#374151' : v >= 20 ? '#059669' : v >= 10 ? '#34d399' : v >= 5 ? '#f59e0b' : v >= 1 ? '#f97316' : '#64748b',
 };
 
 const METRIC_LEGEND = {
@@ -196,9 +202,8 @@ const METRIC_LEGEND = {
   crime_per_1k:    [['#059669','≤ 100'],['#34d399','100–300'],['#f59e0b','300–500'],['#f97316','500–700'],['#ef4444','> 700']],
   rent_to_price:   [['#ef4444','< 4.5%'],['#f97316','4.5–6%'],['#f59e0b','6–8%'],['#34d399','8–10%'],['#059669','≥ 10%']],
   commute_minutes: [['#059669','≤ 20 min'],['#34d399','20–30'],['#f59e0b','30–45'],['#f97316','45–60'],['#ef4444','> 60']],
-  pct_duplex:      [['#ef4444','< 2%'],['#f97316','2–4%'],['#f59e0b','4–7%'],['#34d399','7–12%'],['#059669','≥ 12%']],
-  bcad_mf_count:   [['#ef4444','< 15'],['#f97316','15–40'],['#f59e0b','40–80'],['#34d399','80–150'],['#059669','≥ 150']],
-  permit_mf_12mo:  [['#64748b','0'],['#f97316','1–3'],['#f59e0b','4–7'],['#34d399','8–14'],['#059669','≥ 15']],
+  pct_sfr:          [['#ef4444','< 25%'],['#f97316','25–40%'],['#f59e0b','40–55%'],['#34d399','55–70%'],['#059669','≥ 70%']],
+  permit_sfr_12mo:  [['#64748b','0'],['#f97316','1–4'],['#f59e0b','5–9'],['#34d399','10–19'],['#059669','≥ 20']],
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -233,20 +238,16 @@ function scoreBar(r) {
 
 function mixBar(r) {
   if (r.pct_sfr == null) return '<span class="text-slate-600">—</span>';
-  const sfr   = (r.pct_sfr      || 0) * 100;
-  const dup   = (r.pct_duplex   || 0) * 100;
-  const smf3  = Math.max(0, ((r.pct_small_mf || 0) - (r.pct_duplex || 0)) * 100);
-  const large = Math.max(0, 100 - sfr - dup - smf3);
-  const tip   = `SFR ${sfr.toFixed(0)}% · Duplex ${dup.toFixed(0)}% · 3–4u ${smf3.toFixed(0)}% · 5+u ${large.toFixed(0)}%`;
+  const sfr  = (r.pct_sfr || 0) * 100;
+  const rest = Math.max(0, 100 - sfr);
+  const tip  = `SFR ${sfr.toFixed(0)}% · Other ${rest.toFixed(0)}%`;
   return `
     <div title="${tip}">
       <div style="display:flex;height:5px;width:55px;border-radius:2px;overflow:hidden;gap:1px;margin-bottom:3px">
         <div style="background:#3b82f6;width:${sfr.toFixed(1)}%"></div>
-        <div style="background:#10b981;width:${dup.toFixed(1)}%"></div>
-        <div style="background:#f59e0b;width:${smf3.toFixed(1)}%"></div>
-        <div style="background:#475569;width:${large.toFixed(1)}%"></div>
+        <div style="background:#475569;width:${rest.toFixed(1)}%"></div>
       </div>
-      <span style="font-size:10px;color:#6ee7b7">${dup.toFixed(0)}%</span><span style="font-size:9px;color:#64748b"> dup</span>
+      <span style="font-size:10px;color:#93c5fd">${sfr.toFixed(0)}%</span><span style="font-size:9px;color:#64748b"> sfr</span>
     </div>`;
 }
 
@@ -273,30 +274,20 @@ function popupHTML(p) {
             <td style="color:#e2e8f0">${fmt.usd(p.median_hh_income)}</td></tr>
         <tr><td style="color:#94a3b8;padding:2px 0">5yr CAGR</td>
             <td style="color:${cagrClass(p.zhvi_cagr_5yr)}">${fmt.cagr(p.zhvi_cagr_5yr)}</td></tr>
-        ${p.pct_duplex != null ? `
+        ${p.pct_sfr != null ? `
         <tr><td colspan="2" style="padding-top:6px;padding-bottom:2px;color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.06em">Housing Stock (Census)</td></tr>
-        <tr><td style="color:#94a3b8;padding:2px 0">SFR</td>
-            <td style="color:#93c5fd">${fmt.pct(p.pct_sfr)}</td></tr>
-        <tr><td style="color:#94a3b8;padding:2px 0">Duplex (2-unit)</td>
-            <td style="color:#6ee7b7">${fmt.pct(p.pct_duplex)}</td></tr>
-        <tr><td style="color:#94a3b8;padding:2px 0">Small MF (2–4u)</td>
-            <td style="color:#e2e8f0">${fmt.pct(p.pct_small_mf)}</td></tr>` : ''}
+        <tr><td style="color:#94a3b8;padding:2px 0">SFR share</td>
+            <td style="color:#93c5fd">${fmt.pct(p.pct_sfr)}</td></tr>` : ''}
         ${p.bcad_sfr_count != null ? `
         <tr><td colspan="2" style="padding-top:6px;padding-bottom:2px;color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.06em">BCAD Parcel Inventory</td></tr>
         <tr><td style="color:#94a3b8;padding:2px 0">SFR parcels (A1)</td>
-            <td style="color:#93c5fd">${(p.bcad_sfr_count||0).toLocaleString()}<span style="color:#475569;font-size:10px"> · avg ${fmt.usd(p.bcad_sfr_assessed)}</span></td></tr>
-        <tr><td style="color:#94a3b8;padding:2px 0">Small MF parcels (B1)</td>
-            <td style="color:#6ee7b7">${(p.bcad_mf_count||0).toLocaleString()}<span style="color:#475569;font-size:10px"> · avg ${fmt.usd(p.bcad_mf_assessed)}</span></td></tr>
-        ${p.bcad_large_mf_count ? `<tr><td style="color:#94a3b8;padding:2px 0">Apt complexes (B2)</td>
-            <td style="color:#94a3b8">${(p.bcad_large_mf_count||0).toLocaleString()}</td></tr>` : ''}` : ''}
+            <td style="color:#93c5fd">${(p.bcad_sfr_count||0).toLocaleString()}<span style="color:#475569;font-size:10px"> · avg ${fmt.usd(p.bcad_sfr_assessed)}</span></td></tr>` : ''}
         ${p.permit_total_12mo != null ? `
         <tr><td colspan="2" style="padding-top:6px;padding-bottom:2px;color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.06em">New Construction · Trailing 12 mo</td></tr>
         <tr><td style="color:#94a3b8;padding:2px 0">SFR</td>
             <td style="color:#93c5fd">${p.permit_sfr_12mo} permit${p.permit_sfr_12mo !== 1 ? 's' : ''}</td></tr>
-        <tr><td style="color:#94a3b8;padding:2px 0">Duplex</td>
-            <td style="color:${p.permit_duplex_12mo > 0 ? '#6ee7b7' : '#475569'}">${p.permit_duplex_12mo} permit${p.permit_duplex_12mo !== 1 ? 's' : ''}</td></tr>
-        <tr><td style="color:#94a3b8;padding:2px 0">3–4 unit</td>
-            <td style="color:${p.permit_small_mf_12mo > 0 ? '#fcd34d' : '#475569'}">${p.permit_small_mf_12mo} permit${p.permit_small_mf_12mo !== 1 ? 's' : ''}</td></tr>` : ''}
+        ${p.permit_large_mf_12mo > 0 ? `<tr><td style="color:#94a3b8;padding:2px 0">Apt complexes (5+u)</td>
+            <td style="color:#94a3b8">${p.permit_large_mf_12mo} permit${p.permit_large_mf_12mo !== 1 ? 's' : ''}</td></tr>` : ''}` : ''}
       </table>
       <div style="margin-top:10px;display:flex;gap:10px;font-size:12px">
         <a href="${gmaps}"  target="_blank" class="popup-link">📍 Maps</a>
@@ -650,20 +641,57 @@ document.querySelectorAll('.tab').forEach(btn => {
   });
 });
 
-document.getElementById('btn-refresh').addEventListener('click', async () => {
+document.getElementById('btn-close-log').addEventListener('click', () => {
+  document.getElementById('pipeline-panel').classList.add('hidden');
+});
+
+document.getElementById('btn-refresh').addEventListener('click', () => {
   const btn = document.getElementById('btn-refresh');
+  const panel = document.getElementById('pipeline-panel');
+  const log = document.getElementById('pipeline-log');
+  const status = document.getElementById('pipeline-status');
+
   btn.disabled = true;
   btn.textContent = 'Running…';
-  try {
-    const res = await fetch('/api/run-pipeline', { method: 'POST' });
-    if (!res.ok) throw new Error('Pipeline failed');
-    await loadData();
-  } catch {
-    alert('Pipeline error — check terminal for details.');
-  } finally {
+  log.textContent = '';
+  status.textContent = 'Running pipeline…';
+  status.className = 'text-xs font-mono text-slate-400';
+  panel.classList.remove('hidden');
+
+  const es = new EventSource('/api/run-pipeline/stream');
+
+  es.onmessage = (e) => {
+    const line = e.data;
+    const colored = line.includes('ERROR') || line.includes('Traceback') || line.includes('Exception')
+      ? `<span class="text-red-400">${line}</span>\n`
+      : line.includes('WARNING')
+        ? `<span class="text-yellow-400">${line}</span>\n`
+        : line + '\n';
+    log.insertAdjacentHTML('beforeend', colored);
+    log.scrollTop = log.scrollHeight;
+  };
+
+  es.addEventListener('done', (e) => {
+    es.close();
     btn.disabled = false;
     btn.innerHTML = `<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Re-run pipeline`;
-  }
+    if (e.data === 'ok') {
+      status.textContent = '✓ Pipeline complete';
+      status.className = 'text-xs font-mono text-green-400';
+      loadData();
+    } else {
+      status.textContent = `✗ Pipeline failed (${e.data})`;
+      status.className = 'text-xs font-mono text-red-400';
+    }
+  });
+
+  es.onerror = () => {
+    es.close();
+    btn.disabled = false;
+    status.textContent = '✗ Connection lost';
+    status.className = 'text-xs font-mono text-red-400';
+    btn.innerHTML = `<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Re-run pipeline`;
+  };
 });
 
 loadData();

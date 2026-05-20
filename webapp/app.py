@@ -8,6 +8,7 @@ Usage:
     then open http://localhost:8000
 """
 
+import asyncio
 import copy
 import hashlib
 import io
@@ -21,13 +22,18 @@ from pathlib import Path
 import pandas as pd
 import requests
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 from cache_manager import CacheManager
 from config import CACHE_DIR
+
+# Always run pipeline subprocesses with the project venv if it exists,
+# regardless of what Python launched the server.
+_VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
+PIPELINE_PYTHON = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
 
 RANKED_CSV = ROOT / "data" / "final" / "ranked_zip_scores.csv"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -214,17 +220,31 @@ def get_geojson():
     return JSONResponse(content={"type": "FeatureCollection", "features": features})
 
 
-@app.post("/api/run-pipeline")
-def run_pipeline():
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "main.py"), "--no-google-maps"],
-        capture_output=True,
-        text=True,
-        cwd=str(ROOT),
+@app.get("/api/run-pipeline/stream")
+async def run_pipeline_stream():
+    """
+    SSE endpoint — streams pipeline stdout+stderr line-by-line as it runs.
+    Sends a final `event: done` with data `ok` or `error:<returncode>`.
+    """
+    async def event_gen():
+        proc = await asyncio.create_subprocess_exec(
+            PIPELINE_PYTHON, str(ROOT / "main.py"), "--no-google-maps",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,  # merge so all output is visible
+            cwd=str(ROOT),
+        )
+        async for raw in proc.stdout:
+            line = raw.decode(errors="replace").rstrip()
+            yield f"data: {line}\n\n"
+        await proc.wait()
+        status = "ok" if proc.returncode == 0 else f"error:{proc.returncode}"
+        yield f"event: done\ndata: {status}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-    if result.returncode != 0:
-        raise HTTPException(status_code=500, detail=result.stderr[-2000:])
-    return {"status": "ok", "stdout": result.stdout[-2000:]}
 
 
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
