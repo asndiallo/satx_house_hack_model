@@ -21,10 +21,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from utils import setup_logging, save_csv, load_zip_centroids
-from data_loader import load_zhvi, load_zori, load_census_acs, load_crime_data, load_bcad_data, load_permit_data
+from data_loader import load_zhvi, load_zori, load_census_acs, load_crime_data, load_bcad_data, load_permit_data, load_suburban_crime
 from preprocess import (
     process_zhvi, compute_zhvi_stability, compute_zhvi_cagr,
-    process_zori, process_census, process_crime, process_bcad, process_permits, merge_datasets
+    process_zori, process_census, process_crime,
+    process_suburban_crime, blend_crime_sources,
+    process_bcad, process_permits, merge_datasets
 )
 from feature_engineering import (
     compute_rent_to_price,
@@ -133,13 +135,14 @@ def run_pipeline(use_google_maps: bool = True, top_n: int = 15, diagnose_mode: b
     logger.info("STEP 1: Loading raw data")
     logger.info("="*60)
 
-    zhvi_raw   = load_zhvi()
-    zori_raw   = load_zori()
-    census_raw = load_census_acs()
-    crime_raw  = load_crime_data()
-    bcad_raw    = load_bcad_data()    # optional — None if fetch fails
-    permit_raw  = load_permit_data()  # optional — None if fetch fails
-    zip_coords  = load_zip_centroids()
+    zhvi_raw          = load_zhvi()
+    zori_raw          = load_zori()
+    census_raw        = load_census_acs()
+    crime_raw         = load_crime_data()
+    suburban_crime_raw = load_suburban_crime()  # optional — None if FBI_CDE_API_KEY not set
+    bcad_raw          = load_bcad_data()        # optional — None if fetch fails
+    permit_raw        = load_permit_data()      # optional — None if fetch fails
+    zip_coords        = load_zip_centroids()
 
     # ── Step 2: Process ───────────────────────────────────────────────────────
     logger.info("="*60)
@@ -151,7 +154,10 @@ def run_pipeline(use_google_maps: bool = True, top_n: int = 15, diagnose_mode: b
     cagr      = compute_zhvi_cagr(zhvi_raw)         # from same ZHVI file, free
     zori      = process_zori(zori_raw)
     census    = process_census(census_raw)
-    crime     = process_crime(crime_raw, census_df=census)
+    crime = process_crime(crime_raw, census_df=census)
+    if suburban_crime_raw is not None:
+        suburban_crime = process_suburban_crime(suburban_crime_raw, census_df=census)
+        crime = blend_crime_sources(crime, suburban_crime)
     bcad      = process_bcad(bcad_raw)     if bcad_raw    is not None else None
     permits   = process_permits(permit_raw) if permit_raw   is not None else None
 

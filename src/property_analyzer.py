@@ -9,13 +9,15 @@ Outputs: crime breakdown, negotiation range, cashflow (Phase 1/2), 3-yr P&L,
 """
 
 import logging
+import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -143,6 +145,170 @@ def _categorize(problem_upper: str) -> str:
         if problem_upper in codes:
             return cat
     return "Other"
+
+
+# ── Address lookup (geocode + BCAD parcel) ────────────────────────────────────
+
+_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+
+# GBA sq-ft → bedroom estimate (Bexar County SFR norms)
+_GBA_BED_BREAKPOINTS = [(900, 2), (1400, 3), (2000, 4), (2600, 5)]
+
+
+@dataclass
+class PropertyLookup:
+    """Result of resolving a street address to ZIP + BCAD parcel data."""
+    address: str
+    zip_code: str
+    lat: float
+    lng: float
+    state_cd: Optional[str] = None
+    units: int = 1
+    estimated_bedrooms: Optional[int] = None
+    gba_sqft: Optional[int] = None
+    year_built: Optional[int] = None
+    assessed_value: Optional[float] = None
+    bcad_address: Optional[str] = None
+    bcad_found: bool = False
+    warnings: list = field(default_factory=list)
+
+
+def _estimate_bedrooms_from_gba(gba: int) -> int:
+    for threshold, beds in _GBA_BED_BREAKPOINTS:
+        if gba < threshold:
+            return beds
+    return 5
+
+
+def _state_cd_to_units(state_cd: str) -> int:
+    if state_cd == "A1":
+        return 1
+    if state_cd == "B1":
+        return 2
+    return 1
+
+
+def _geocode_address(address: str) -> dict:
+    """Google Maps geocoding → {address, zip, lat, lng}."""
+    from config import GOOGLE_MAPS_API_KEY
+    if not GOOGLE_MAPS_API_KEY:
+        raise RuntimeError(
+            "GOOGLE_MAPS_API_KEY is not set in .env — address geocoding requires it."
+        )
+    resp = requests.get(
+        _GEOCODE_URL,
+        params={"address": address, "key": GOOGLE_MAPS_API_KEY},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if data["status"] == "ZERO_RESULTS":
+        raise ValueError(f"Address not found: '{address}'")
+    if data["status"] != "OK":
+        raise ValueError(f"Geocoding error ({data['status']}): '{address}'")
+    result = data["results"][0]
+    formatted = result["formatted_address"]
+    lat = result["geometry"]["location"]["lat"]
+    lng = result["geometry"]["location"]["lng"]
+    zip_code = next(
+        (c["long_name"] for c in result["address_components"] if "postal_code" in c["types"]),
+        None,
+    )
+    if not zip_code:
+        raise ValueError(f"Could not extract ZIP code from: '{formatted}'")
+    return {"address": formatted, "zip": zip_code, "lat": lat, "lng": lng}
+
+
+def _query_bcad_parcel(street_number: str, street_name: str, zip_code: str) -> Optional[dict]:
+    """Query BCAD ArcGIS for a single parcel by address + ZIP."""
+    from config import BCAD_ARCGIS_URL
+    name_parts = street_name.upper().split()[:3]
+    situs_pattern = f"{street_number}%{'%'.join(name_parts)}%"
+    params = {
+        "where": f"Situs LIKE '{situs_pattern}' AND Zip='{zip_code}'",
+        "outFields": "Situs,Zip,State_cd,GBA,YrBlt,TotVal,Houses",
+        "resultRecordCount": 3,
+        "orderByFields": "TotVal DESC",
+        "f": "json",
+    }
+    try:
+        resp = requests.get(
+            "https://maps.bexar.org/arcgis/rest/services/Parcels/MapServer/0/query",
+            params=params,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        features = resp.json().get("features", [])
+        return features[0]["attributes"] if features else None
+    except Exception as exc:
+        logger.warning(f"BCAD parcel lookup failed: {exc}")
+        return None
+
+
+def lookup_property(address: str) -> PropertyLookup:
+    """
+    Resolve a street address to a PropertyLookup.
+
+    1. Geocode via Google Maps → formatted address + ZIP + lat/lng
+    2. Query BCAD ArcGIS for parcel → property type, GBA, year built
+    3. Estimate bedrooms from GBA; derive units from State_cd
+
+    BCAD covers Bexar County only. Suburbs in Guadalupe/Comal/other counties
+    will still get ZIP and lat/lng but no parcel data (bcad_found=False).
+    """
+    geo = _geocode_address(address)
+    result = PropertyLookup(
+        address=geo["address"],
+        zip_code=geo["zip"],
+        lat=geo["lat"],
+        lng=geo["lng"],
+    )
+
+    m = re.match(r"^(\d+)\s+(.+?),", geo["address"])
+    if not m:
+        result.warnings.append(
+            "Could not parse street number — BCAD parcel lookup skipped."
+        )
+        return result
+
+    parcel = _query_bcad_parcel(m.group(1), m.group(2), geo["zip"])
+    if not parcel:
+        result.warnings.append(
+            f"No BCAD parcel found for {m.group(1)} {m.group(2)} in {geo['zip']}. "
+            "Bedrooms and units will use defaults (Bexar County only)."
+        )
+        return result
+
+    result.bcad_found = True
+    result.bcad_address = (parcel.get("Situs") or "").strip()
+
+    state_cd = parcel.get("State_cd")
+    if state_cd:
+        result.state_cd = state_cd
+        result.units = _state_cd_to_units(state_cd)
+
+    gba_raw = parcel.get("GBA")
+    if gba_raw and gba_raw != "NULL":
+        try:
+            result.gba_sqft = int(gba_raw)
+            result.estimated_bedrooms = _estimate_bedrooms_from_gba(result.gba_sqft)
+        except (ValueError, TypeError):
+            pass
+
+    yr_raw = parcel.get("YrBlt")
+    if yr_raw and yr_raw != "NULL":
+        try:
+            result.year_built = int(yr_raw)
+        except (ValueError, TypeError):
+            pass
+
+    if parcel.get("TotVal"):
+        result.assessed_value = float(parcel["TotVal"])
+
+    if result.estimated_bedrooms is None:
+        result.warnings.append("GBA unavailable — defaulting to 3 bedrooms.")
+
+    return result
 
 
 # ── Input ─────────────────────────────────────────────────────────────────────
@@ -858,6 +1024,55 @@ def _load_pipeline_data() -> (
     return ranked, merged, zhvf
 
 
+def _get_zip_row_zillow_fallback(zip_code: str) -> Tuple[Optional[pd.Series], bool]:
+    """
+    Build a minimal data row from cached Zillow ZHVI + ZORI when the ZIP is not
+    in the pipeline CSVs.  Used for suburbs outside SAPD coverage (e.g. 78108 Cibolo).
+
+    Returns (row, False) — False = not in ranked output.
+    """
+    try:
+        from data_loader import load_zhvi, load_zori
+        from preprocess import process_zhvi, process_zori, compute_zhvi_cagr
+        from config import ZORI_3BR_PREMIUM, TARGET_BEDROOMS
+
+        zhvi_raw = load_zhvi()
+        zori_raw = load_zori()
+
+        zhvi = process_zhvi(zhvi_raw)
+        zori = process_zori(zori_raw)
+
+        zhvi_row = zhvi[zhvi["zip"] == zip_code]
+        if zhvi_row.empty:
+            return None, False
+
+        data: Dict[str, Any] = {"zip": zip_code}
+        data["median_home_value"] = float(zhvi_row.iloc[0]["median_home_value"])
+
+        zori_row = zori[zori["zip"] == zip_code]
+        if not zori_row.empty:
+            rent = float(zori_row.iloc[0]["median_rent"])
+            data["median_rent"] = rent
+            data["est_room_rent"] = rent * ZORI_3BR_PREMIUM / TARGET_BEDROOMS
+
+        # CAGR for display
+        cagr = compute_zhvi_cagr(zhvi_raw)
+        cagr_row = cagr[cagr["zip"] == zip_code]
+        if not cagr_row.empty:
+            for col in [c for c in cagr.columns if c != "zip"]:
+                data[col] = cagr_row.iloc[0][col]
+
+        logger.info(
+            f"ZIP {zip_code}: using Zillow direct fallback "
+            f"(not in pipeline data — suburb or outside SAPD coverage)"
+        )
+        return pd.Series(data), False
+
+    except Exception as exc:
+        logger.warning(f"Zillow fallback failed for {zip_code}: {exc}")
+        return None, False
+
+
 def _get_zip_row(
     zip_code: str, ranked: Optional[pd.DataFrame], merged: Optional[pd.DataFrame]
 ) -> Tuple[Optional[pd.Series], bool]:
@@ -1036,9 +1251,15 @@ def analyze_property(prop: PropertyInput) -> Dict[str, Any]:
     row, in_ranked = _get_zip_row(prop.zip_code, ranked, merged)
 
     if row is None:
+        # Pipeline data doesn't cover this ZIP (e.g. suburb outside SAPD jurisdiction).
+        # Fall back to Zillow ZHVI + ZORI data fetched directly from the cache.
+        row, in_ranked = _get_zip_row_zillow_fallback(prop.zip_code)
+
+    if row is None:
         raise ValueError(
-            f"ZIP {prop.zip_code} not found in pipeline data. "
-            "It may be outside the San Antonio metro area or missing from source data."
+            f"ZIP {prop.zip_code} not found in pipeline data or Zillow data. "
+            "Check that it is in the San Antonio metro area. "
+            "Re-run `python main.py --no-google-maps` to rebuild pipeline data."
         )
 
     # Determine the per-unit/per-room rate to use for cashflow calculations.

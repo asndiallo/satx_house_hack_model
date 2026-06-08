@@ -373,6 +373,78 @@ def process_crime(
     return result
 
 
+# ── Suburban Crime (FBI UCR) ─────────────────────────────────────────────────
+
+
+def process_suburban_crime(
+    df: pd.DataFrame, census_df: pd.DataFrame = None
+) -> pd.DataFrame:
+    """
+    Normalize suburban UCR offense data to per-1,000 residents.
+
+    Uses Census population (same denominator as SAPD crime) for consistency.
+    Falls back to UCR-submitted population if the ZIP is absent from Census.
+
+    UCR Part I offenses cover 8 categories (violent + property crimes reported
+    to FBI). SAPD CFS data is broader (all dispatched criminal calls), producing
+    rates 3–5× higher for equivalent neighborhoods. Both sources are log-transformed
+    and relative-ranked, so directional ordering survives the methodology gap.
+    """
+    df = df.copy()
+    df["zip"] = df["zip"].astype(str).str.zfill(5)
+    df["crime_incidents"] = pd.to_numeric(df["crime_incidents"], errors="coerce")
+    df["ucr_population"] = pd.to_numeric(df.get("ucr_population", 0), errors="coerce")
+
+    if census_df is not None and "population" in census_df.columns:
+        pop = census_df[["zip", "population"]].copy()
+        pop["population"] = pd.to_numeric(pop["population"], errors="coerce")
+        df = df.merge(pop, on="zip", how="left")
+        df["pop_used"] = df["population"].fillna(df["ucr_population"])
+    else:
+        df["pop_used"] = df["ucr_population"]
+
+    thin = df["pop_used"].fillna(0) < MIN_POPULATION_FOR_CRIME
+    if thin.sum() > 0:
+        logger.warning(
+            f"Suburban crime: dropping {thin.sum()} ZIP(s) with pop < "
+            f"{MIN_POPULATION_FOR_CRIME:,} (unreliable per-1k rate)"
+        )
+        df = df[~thin].copy()
+
+    valid = df["pop_used"].notna() & (df["pop_used"] > 0)
+    df["crime_per_1k"] = np.nan
+    df.loc[valid, "crime_per_1k"] = (
+        df.loc[valid, "crime_incidents"] / df.loc[valid, "pop_used"] * 1000
+    )
+
+    result = df[["zip", "crime_per_1k"]].dropna()
+    if not result.empty:
+        logger.info(
+            f"Suburban crime (UCR): {len(result)} ZIPs | "
+            f"range: {result['crime_per_1k'].min():.1f} – "
+            f"{result['crime_per_1k'].max():.1f} per 1k "
+            f"(Part I offenses — compare SAPD rates with caution)"
+        )
+    return result
+
+
+def blend_crime_sources(sapd: pd.DataFrame, suburban: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fill SAPD crime data gaps with suburban UCR data.
+    SAPD takes precedence — UCR only used for ZIPs not covered by SAPD.
+    """
+    new_zips = suburban[~suburban["zip"].isin(sapd["zip"])].copy()
+    if new_zips.empty:
+        logger.info("Crime blend: no new suburban ZIPs to add (all already in SAPD data)")
+        return sapd
+    result = pd.concat([sapd, new_zips], ignore_index=True)
+    logger.info(
+        f"Crime blend: {len(sapd)} SAPD ZIPs + {len(new_zips)} suburban UCR ZIPs "
+        f"= {len(result)} total"
+    )
+    return result
+
+
 # ── Building Permits ─────────────────────────────────────────────────────────
 
 
@@ -543,23 +615,36 @@ def merge_datasets(
     are not dropped; they simply get NaN CAGR columns.
     Population is dropped after merge (only needed for crime normalization).
     """
-    datasets = {
-        "ZHVI": zhvi,
+    # Required inner-join sources — ZIPs missing from these are genuinely unusable.
+    # Crime is left-joined (see below): suburbs outside SAPD coverage should still
+    # appear in the merged dataset; they get crime_per_1k=NaN and a "NO_DATA" flag.
+    required = {
         "ZORI": zori,
         "Census": census,
-        "Crime": crime,
         "Commute": commute,
     }
     if stability is not None:
-        datasets["Stability"] = stability
+        required["Stability"] = stability
 
     base = zhvi.copy()
-    for name, df in list(datasets.items())[1:]:
+    for name, df in required.items():
         before = len(base)
         base = base.merge(df, on="zip", how="inner")
         dropped = before - len(base)
         if dropped > 0:
             logger.warning(f"{name} merge dropped {dropped} ZIPs (no matching data)")
+
+    # Crime: left-join so suburbs outside SAPD jurisdiction are retained.
+    # ZIPs with no SAPD data get crime_per_1k=NaN; flag_crime_risk() labels them
+    # "NO_DATA" and normalize_features() assigns a neutral 0.5 crime score.
+    before = len(base)
+    base = base.merge(crime, on="zip", how="left")
+    no_crime = base["crime_per_1k"].isna().sum()
+    if no_crime > 0:
+        logger.info(
+            f"Crime left-join: {no_crime} ZIPs have no SAPD data "
+            f"(suburbs outside SAPD jurisdiction) — will receive NO_DATA flag"
+        )
 
     # CAGR is display-only — left join so no ZIPs are dropped for missing history
     if cagr is not None:

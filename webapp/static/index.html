@@ -88,6 +88,10 @@
     class="tab px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 -mb-px hover:text-slate-200 transition-colors">
     Map
   </button>
+  <button id="tab-analyze" data-view="analyze"
+    class="tab px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 -mb-px hover:text-slate-200 transition-colors">
+    Analyze Property
+  </button>
 </div>
 
 <!-- ── Table view ────────────────────────────────────────────────────────── -->
@@ -156,6 +160,170 @@
     <span id="map-status" class="ml-auto text-xs text-slate-500"></span>
   </div>
   <div id="map"></div>
+</div>
+
+<!-- ── Analyze Property view ─────────────────────────────────────────────── -->
+<div id="view-analyze" class="hidden px-6 pt-5 pb-8 fade-in max-w-3xl mx-auto">
+
+  <!-- Form -->
+  <div class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-6 mb-6">
+    <h2 class="text-base font-semibold text-white mb-1">Analyze a Property</h2>
+    <p class="text-xs text-slate-400 mb-5">
+      Enter a full street address + asking price. ZIP code and bedrooms are pulled automatically from
+      Google Maps and Bexar County tax records (BCAD).
+      <span class="text-slate-500">Non-Bexar county properties (Schertz, etc.) will use default bedroom counts.</span>
+    </p>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <!-- Address -->
+      <div class="sm:col-span-2">
+        <label class="block text-xs text-slate-400 mb-1">Full address <span class="text-red-400">*</span></label>
+        <input id="inp-address" type="text" placeholder="123 Oak Lane, San Antonio TX 78239"
+          class="w-full bg-[#0a1929] border border-slate-600 rounded-lg px-3 py-2 text-sm text-white
+                 placeholder-slate-600 focus:outline-none focus:border-sky-500 transition-colors" />
+      </div>
+
+      <!-- Price -->
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Asking price <span class="text-red-400">*</span></label>
+        <div class="relative">
+          <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">$</span>
+          <input id="inp-price" type="number" min="50000" max="800000" step="1000" placeholder="285000"
+            class="w-full bg-[#0a1929] border border-slate-600 rounded-lg pl-6 pr-3 py-2 text-sm text-white
+                   placeholder-slate-600 focus:outline-none focus:border-sky-500 transition-colors" />
+        </div>
+      </div>
+
+      <!-- BAH -->
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Monthly BAH <span class="text-slate-600">(optional)</span></label>
+        <div class="relative">
+          <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">$</span>
+          <input id="inp-bah" type="number" min="0" max="5000" step="50" placeholder="1900"
+            class="w-full bg-[#0a1929] border border-slate-600 rounded-lg pl-6 pr-3 py-2 text-sm text-white
+                   placeholder-slate-600 focus:outline-none focus:border-sky-500 transition-colors" />
+        </div>
+      </div>
+
+      <!-- Bedrooms override -->
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Bedrooms <span class="text-slate-600">(auto-detected)</span></label>
+        <input id="inp-bedrooms" type="number" min="1" max="8" step="1" placeholder="auto"
+          class="w-full bg-[#0a1929] border border-slate-600 rounded-lg px-3 py-2 text-sm text-white
+                 placeholder-slate-600 focus:outline-none focus:border-sky-500 transition-colors" />
+      </div>
+
+      <!-- Rooms to rent override -->
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Rooms to rent <span class="text-slate-600">(auto = bedrooms − 1)</span></label>
+        <input id="inp-rooms" type="number" min="1" max="6" step="1" placeholder="auto"
+          class="w-full bg-[#0a1929] border border-slate-600 rounded-lg px-3 py-2 text-sm text-white
+                 placeholder-slate-600 focus:outline-none focus:border-sky-500 transition-colors" />
+      </div>
+
+      <!-- Loan type -->
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Loan type</label>
+        <select id="inp-loan" class="w-full bg-[#0a1929] border border-slate-600 rounded-lg px-3 py-2 text-sm text-white
+                focus:outline-none focus:border-sky-500 transition-colors">
+          <option value="VA">VA loan (0% down, 2.15% funding fee)</option>
+          <option value="Conventional">Conventional</option>
+        </select>
+      </div>
+
+      <!-- Interest rate -->
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Interest rate (%)</label>
+        <input id="inp-rate" type="number" min="3" max="12" step="0.125" placeholder="6.875"
+          class="w-full bg-[#0a1929] border border-slate-600 rounded-lg px-3 py-2 text-sm text-white
+                 placeholder-slate-600 focus:outline-none focus:border-sky-500 transition-colors" />
+      </div>
+    </div>
+
+    <div class="mt-5 flex items-center gap-3">
+      <button id="btn-analyze"
+        class="px-5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+        Analyze
+      </button>
+      <span id="analyze-spinner" class="hidden text-xs text-slate-400">Looking up property…</span>
+      <span id="analyze-error" class="hidden text-xs text-red-400"></span>
+    </div>
+  </div>
+
+  <!-- Results panel (hidden until analysis completes) -->
+  <div id="analyze-results" class="hidden fade-in space-y-4">
+
+    <!-- Address card -->
+    <div id="res-address-card" class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-4">
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <div id="res-address"      class="text-sm font-semibold text-white"></div>
+          <div id="res-zip-area"     class="text-xs text-slate-400 mt-0.5"></div>
+          <div id="res-bcad-info"    class="text-xs text-slate-500 mt-1"></div>
+        </div>
+        <div id="res-verdict-badge" class="shrink-0 px-3 py-1.5 rounded-lg text-sm font-bold"></div>
+      </div>
+    </div>
+
+    <!-- Cashflow cards -->
+    <div class="grid grid-cols-2 gap-3">
+      <div class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-4">
+        <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-2">Phase 1 — House Hack</div>
+        <div id="res-p1-net"    class="text-xl font-bold text-white mb-0.5"></div>
+        <div class="text-xs text-slate-400">Net/mo (before BAH)</div>
+        <div id="res-p1-bah"    class="text-sm font-semibold text-emerald-400 mt-2"></div>
+        <div class="text-xs text-slate-400">Net/mo with BAH</div>
+      </div>
+      <div class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-4">
+        <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-2">Phase 2 — Full Rental</div>
+        <div id="res-p2-net"    class="text-xl font-bold text-white mb-0.5"></div>
+        <div class="text-xs text-slate-400">Net/mo after PCS</div>
+        <div id="res-p2-income" class="text-sm font-semibold text-sky-400 mt-2"></div>
+        <div class="text-xs text-slate-400">Gross rent (all rooms)</div>
+      </div>
+    </div>
+
+    <!-- Scorecard -->
+    <div class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-4">
+      <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-3">Investment Scorecard</div>
+      <div id="res-scorecard" class="space-y-1.5 text-xs"></div>
+    </div>
+
+    <!-- Key metrics row -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-3">
+        <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-1">Gross Yield</div>
+        <div id="res-yield"    class="text-base font-bold text-white"></div>
+      </div>
+      <div class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-3">
+        <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-1">Breakeven Price</div>
+        <div id="res-breakeven" class="text-base font-bold text-white"></div>
+      </div>
+      <div class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-3">
+        <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-1">ZIP Score / Rank</div>
+        <div id="res-score-rank" class="text-base font-bold text-white"></div>
+      </div>
+      <div class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-3">
+        <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-1">Drive to BAMC</div>
+        <div id="res-commute"  class="text-base font-bold text-white"></div>
+      </div>
+    </div>
+
+    <!-- Yield targets -->
+    <div class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-4">
+      <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-3">Max Price for Yield Target</div>
+      <div id="res-yield-targets" class="flex flex-wrap gap-3 text-xs"></div>
+    </div>
+
+    <!-- PnL scenarios -->
+    <div class="bg-[#0d1f35] rounded-xl border border-slate-700/60 p-4">
+      <div class="text-[10px] uppercase tracking-widest text-slate-500 mb-3">3-Year Exit Scenarios</div>
+      <div id="res-pnl" class="space-y-1.5 text-xs"></div>
+    </div>
+
+    <!-- Warnings -->
+    <div id="res-warnings" class="hidden bg-amber-900/20 border border-amber-700/40 rounded-xl p-4 text-xs text-amber-300 space-y-1"></div>
+  </div>
 </div>
 
 <script>
@@ -559,6 +727,7 @@ function onRowClick(zip) {
 function showView(name) {
   document.getElementById('view-table').classList.toggle('hidden', name !== 'table');
   document.getElementById('view-map').classList.toggle('hidden', name !== 'map');
+  document.getElementById('view-analyze').classList.toggle('hidden', name !== 'analyze');
   document.querySelectorAll('.tab').forEach(btn => {
     const active = btn.dataset.view === name;
     btn.classList.toggle('border-sky-500', active);
@@ -567,6 +736,199 @@ function showView(name) {
     btn.classList.toggle('text-slate-400', !active);
   });
 }
+
+// ── Analyze Property ──────────────────────────────────────────────────────────
+function fmtMoney(v) {
+  if (v == null) return '—';
+  const abs = Math.abs(v);
+  const sign = v >= 0 ? '+$' : '-$';
+  return sign + Math.round(abs).toLocaleString();
+}
+
+function verdictStyle(verdict) {
+  return {
+    BUY:     { bg: 'bg-emerald-900/60', text: 'text-emerald-300', border: 'border-emerald-600' },
+    CAUTION: { bg: 'bg-amber-900/60',   text: 'text-amber-300',   border: 'border-amber-600'   },
+    SKIP:    { bg: 'bg-red-900/60',     text: 'text-red-300',     border: 'border-red-600'      },
+  }[verdict] || { bg: 'bg-slate-800', text: 'text-slate-300', border: 'border-slate-600' };
+}
+
+function conditionDot(status) {
+  const map = { GREEN: 'bg-emerald-400', YELLOW: 'bg-amber-400', RED: 'bg-red-400', 'N/A': 'bg-slate-600' };
+  return `<span class="inline-block w-2 h-2 rounded-full ${map[status] || 'bg-slate-600'} mr-1.5 mt-0.5 shrink-0"></span>`;
+}
+
+function renderAnalysisResults(data) {
+  const results    = document.getElementById('analyze-results');
+  const lookup     = data.lookup || {};
+  const inputs     = data.inputs || {};
+  const cf         = data.cashflow || {};
+  const conditions = data.conditions || {};
+  const scorecard  = data.scorecard || {};
+  const verdict    = data.verdict || '?';
+  const zipNames   = {};  // We can't easily get these from the table data — leave blank
+
+  // Address card
+  document.getElementById('res-address').textContent = lookup.address || data.zip || '';
+  document.getElementById('res-zip-area').textContent =
+    `ZIP ${data.zip || ''}` +
+    (inputs.bedrooms ? ` · ${inputs.bedrooms} bed` : '') +
+    (inputs.units > 1 ? ` · ${inputs.units} units` : '') +
+    (inputs.rooms_rented ? ` · ${inputs.rooms_rented} rooms rented` : '');
+
+  const bcadParts = [];
+  if (lookup.bcad_found) {
+    if (lookup.gba_sqft) bcadParts.push(`${lookup.gba_sqft.toLocaleString()} sq ft (BCAD)`);
+    if (lookup.year_built) bcadParts.push(`Built ${lookup.year_built}`);
+    if (lookup.assessed_value) bcadParts.push(`Assessed ${fmtMoney(lookup.assessed_value)}`);
+  } else {
+    bcadParts.push('Parcel data: Bexar County only — using defaults for non-Bexar ZIPs');
+  }
+  document.getElementById('res-bcad-info').textContent = bcadParts.join(' · ');
+
+  const vs = verdictStyle(verdict);
+  const badge = document.getElementById('res-verdict-badge');
+  badge.textContent = verdict;
+  badge.className = `shrink-0 px-3 py-1.5 rounded-lg text-sm font-bold border ${vs.bg} ${vs.text} ${vs.border}`;
+
+  // Cashflow
+  const p1Net = cf.phase1_net ?? null;
+  const p1Bah = cf.phase1_net_with_bah ?? null;
+  const p2Net = cf.phase2_net ?? null;
+  const p2Inc = cf.phase2_income ?? null;
+
+  const p1El = document.getElementById('res-p1-net');
+  p1El.textContent = p1Net != null ? fmtMoney(p1Net) + '/mo' : '—';
+  p1El.className = `text-xl font-bold ${p1Net >= 0 ? 'text-emerald-400' : 'text-red-400'} mb-0.5`;
+
+  document.getElementById('res-p1-bah').textContent = p1Bah != null ? fmtMoney(p1Bah) + '/mo' : '—';
+
+  const p2El = document.getElementById('res-p2-net');
+  p2El.textContent = p2Net != null ? fmtMoney(p2Net) + '/mo' : '—';
+  p2El.className = `text-xl font-bold ${p2Net >= 0 ? 'text-emerald-400' : 'text-red-400'} mb-0.5`;
+
+  document.getElementById('res-p2-income').textContent = p2Inc != null ? '+$' + Math.round(p2Inc).toLocaleString() + '/mo' : '—';
+
+  // Scorecard conditions
+  const scEl = document.getElementById('res-scorecard');
+  const condItems = Object.entries(conditions).filter(([k]) => !k.startsWith('_'));
+  if (condItems.length) {
+    scEl.innerHTML = condItems.map(([key, cond]) => {
+      if (typeof cond !== 'object' || !cond.status) return '';
+      return `
+        <div class="flex items-start gap-1">
+          ${conditionDot(cond.status)}
+          <span class="${cond.status === 'GREEN' ? 'text-emerald-300' : cond.status === 'YELLOW' ? 'text-amber-300' : cond.status === 'RED' ? 'text-red-300' : 'text-slate-500'}">
+            ${cond.label || key}: <span class="text-slate-300">${cond.display || ''}</span>
+          </span>
+        </div>`;
+    }).join('');
+  } else if (Object.keys(scorecard).length) {
+    scEl.innerHTML = Object.entries(scorecard).map(([key, val]) =>
+      `<div class="text-slate-300"><span class="text-slate-500">${key}:</span> ${val}</div>`
+    ).join('');
+  } else {
+    scEl.innerHTML = '<div class="text-slate-500">No scorecard data.</div>';
+  }
+
+  // Key metrics
+  document.getElementById('res-yield').textContent = data.gross_yield != null
+    ? (data.gross_yield * 100).toFixed(2) + '%' : '—';
+  document.getElementById('res-breakeven').textContent = data.breakeven_price
+    ? '$' + Math.round(data.breakeven_price).toLocaleString() : '—';
+  document.getElementById('res-score-rank').textContent = data.score != null
+    ? (data.score.toFixed ? data.score.toFixed(3) : data.score) + (data.rank ? ` · #${data.rank}` : '') : '—';
+  document.getElementById('res-commute').textContent = data.commute_min != null
+    ? Math.round(data.commute_min) + ' min' : '—';
+
+  // Yield targets
+  const ytEl = document.getElementById('res-yield-targets');
+  const targets = data.yield_targets || {};
+  ytEl.innerHTML = Object.entries(targets).map(([yld, maxPrice]) =>
+    `<div class="bg-[#0a1929] rounded px-3 py-2 border border-slate-700/50 text-center">
+      <div class="text-sky-300 font-bold">${yld}</div>
+      <div class="text-slate-400">max $${Number(maxPrice).toLocaleString()}</div>
+    </div>`
+  ).join('');
+
+  // PnL scenarios
+  const pnlEl = document.getElementById('res-pnl');
+  const scenarios = data.pnl_scenarios || [];
+  pnlEl.innerHTML = scenarios.map(s => {
+    const ret = s.total_return;
+    const retClass = ret >= 0 ? 'text-emerald-400' : 'text-red-400';
+    return `
+      <div class="flex items-center justify-between py-1 border-b border-slate-700/30 last:border-0">
+        <span class="text-slate-300 w-32">${s.label}</span>
+        <span class="text-slate-400">Exit $${Number(s.exit_price).toLocaleString()}</span>
+        <span class="${retClass} font-semibold">${fmtMoney(ret)}</span>
+      </div>`;
+  }).join('');
+
+  // Warnings
+  const warnEl = document.getElementById('res-warnings');
+  const warns = lookup.warnings || [];
+  if (warns.length) {
+    warnEl.classList.remove('hidden');
+    warnEl.innerHTML = warns.map(w => `<div>${w}</div>`).join('');
+  } else {
+    warnEl.classList.add('hidden');
+  }
+
+  results.classList.remove('hidden');
+  results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+document.getElementById('btn-analyze').addEventListener('click', async () => {
+  const address = document.getElementById('inp-address').value.trim();
+  const priceRaw = document.getElementById('inp-price').value.trim();
+  const errorEl  = document.getElementById('analyze-error');
+  const spinner  = document.getElementById('analyze-spinner');
+  const btn      = document.getElementById('btn-analyze');
+
+  errorEl.classList.add('hidden');
+  if (!address) { errorEl.textContent = 'Address is required.'; errorEl.classList.remove('hidden'); return; }
+  if (!priceRaw) { errorEl.textContent = 'Asking price is required.'; errorEl.classList.remove('hidden'); return; }
+
+  const price    = parseFloat(priceRaw);
+  const bah      = parseFloat(document.getElementById('inp-bah').value || '0') || 0;
+  const bedrooms = parseInt(document.getElementById('inp-bedrooms').value || '') || null;
+  const rooms    = parseInt(document.getElementById('inp-rooms').value || '') || null;
+  const rate     = parseFloat(document.getElementById('inp-rate').value || '6.875') || 6.875;
+  const loanType = document.getElementById('inp-loan').value;
+
+  btn.disabled   = true;
+  spinner.textContent = 'Looking up property…';
+  spinner.classList.remove('hidden');
+  document.getElementById('analyze-results').classList.add('hidden');
+
+  try {
+    const payload = { address, price, bah, rate, loan_type: loanType };
+    if (bedrooms) payload.bedrooms = bedrooms;
+    if (rooms)    payload.rooms_rented = rooms;
+
+    spinner.textContent = 'Running analysis…';
+    const res = await fetch('/api/analyze-address', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(body.detail || res.statusText);
+    }
+
+    const data = await res.json();
+    renderAnalysisResults(data);
+  } catch (e) {
+    errorEl.textContent = e.message;
+    errorEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    spinner.classList.add('hidden');
+  }
+});
 
 // ── Data loading ──────────────────────────────────────────────────────────────
 async function loadData() {

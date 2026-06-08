@@ -152,14 +152,18 @@ def flag_crime_risk(df: pd.DataFrame) -> pd.DataFrame:
       ELEVATED     — middle tercile
       HIGH         — top tercile
       DATA_SUSPECT — above MAX_CRIME_PER_1K absolute ceiling (data quality concern)
+      NO_DATA      — ZIP outside SAPD jurisdiction; no crime rate available
     """
     df = df.copy()
     crime = df["crime_per_1k"]
 
-    t33 = crime.quantile(0.33)
-    t67 = crime.quantile(0.67)
+    crime_known = crime.dropna()
+    t33 = crime_known.quantile(0.33)
+    t67 = crime_known.quantile(0.67)
 
-    def _flag(v: float) -> str:
+    def _flag(v) -> str:
+        if pd.isna(v):
+            return "NO_DATA"
         if v > MAX_CRIME_PER_1K:
             return "DATA_SUSPECT"
         if v <= t33:
@@ -266,7 +270,9 @@ def normalize_features(df: pd.DataFrame) -> pd.DataFrame:
     df["score_rent_to_price"] = (
         (df["rent_to_price_capped"] - _yield_floor) / _yield_range
     ).clip(0, 1)
-    df["score_crime"] = minmax(df["crime_log"], invert=True)
+    # ZIPs outside SAPD jurisdiction have crime_log=NaN — assign neutral 0.5 so
+    # they aren't penalized for missing data while still not scoring well on safety.
+    df["score_crime"] = minmax(df["crime_log"], invert=True).fillna(0.5)
     df["score_owner_occupancy"] = minmax(df["owner_occ_pct"])
     df["score_commute"] = minmax(df["commute_minutes"], invert=True)
 

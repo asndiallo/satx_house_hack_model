@@ -24,6 +24,7 @@ from config import (
     CENSUS_API_KEY, CENSUS_BASE_URL, CENSUS_YEAR,
     CENSUS_TABLES, SA_CRIME_URL, SA_PERMITS_URL,
     TARGET_STATE_FIPS,
+    FBI_CDE_API_KEY, FBI_CDE_YEAR, SUBURBAN_CITY_TO_ZIPS,
 )
 
 _cache = CacheManager(CACHE_DIR)
@@ -229,6 +230,186 @@ def load_crime_data() -> pd.DataFrame:
     df = pd.read_csv(cache_path, dtype=str)
     logger.info(f"Crime data loaded: {len(df):,} rows, columns: {df.columns.tolist()}")
     _cache.set("crime_raw_marker", True, source="load_crime_data")
+    return df
+
+
+# ── Suburban Crime (FBI CDE / UCR) ───────────────────────────────────────────
+
+_FBI_CDE_BASE = "https://api.usa.gov/crime/fbi/cde"
+
+
+def load_suburban_crime() -> Optional[pd.DataFrame]:
+    """
+    Fetch UCR Part I offense data for suburban TX agencies from FBI Crime Data Explorer.
+
+    Covers cities outside SAPD jurisdiction (Cibolo, Schertz, New Braunfels, etc.)
+    so their ZIPs can be scored instead of receiving a NO_DATA flag.
+
+    Requires FBI_CDE_API_KEY in .env — free key at https://api.data.gov/signup/
+    Returns None gracefully if key not set or API unavailable.
+
+    API response format: {COUNTY_NAME: [agency_records]} — one request, no pagination.
+    Agency records have no city_name field; matched by substring in agency_name.
+
+    Methodology note: UCR counts 8 reported offense types (Part I violent + property).
+    SAPD data counts all dispatched criminal calls — a broader definition that produces
+    rates 3–5× higher for equivalent areas. Both are log-transformed and relative-ranked,
+    so the directional ordering (suburbs safer than dense SA ZIPs) is preserved even
+    without a perfect methodological match.
+    """
+    if not FBI_CDE_API_KEY:
+        logger.info(
+            "FBI_CDE_API_KEY not set — suburban crime data skipped. "
+            "Add to .env to score suburbs like Cibolo, Schertz, New Braunfels. "
+            "Free key: https://api.data.gov/signup/"
+        )
+        return None
+
+    cache_key = f"suburban_crime_{FBI_CDE_YEAR}"
+    cached = _cache.get(cache_key, ttl_hours=CACHE_TTL.get("suburban_crime_hours", 8760))
+    if cached is not None:
+        return cached
+
+    # Step 1: fetch all TX agencies — response is {COUNTY_NAME: [agencies]}, one call
+    try:
+        resp = requests.get(
+            f"{_FBI_CDE_BASE}/agency/byStateAbbr/TX",
+            params={"API_KEY": FBI_CDE_API_KEY},
+            timeout=30,
+            headers=_HEADERS,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning(f"FBI CDE agency list fetch failed: {exc}")
+        return None
+
+    # Flatten {COUNTY: [agencies]} into a single list
+    all_agencies = []
+    if isinstance(data, dict):
+        for county, agency_list in data.items():
+            if isinstance(agency_list, list):
+                for a in agency_list:
+                    a["_county"] = county
+                    all_agencies.append(a)
+    elif isinstance(data, list):
+        all_agencies = data
+
+    if not all_agencies:
+        logger.warning("FBI CDE: no TX agencies in response — check API key or endpoint")
+        return None
+
+    logger.info(f"FBI CDE: {len(all_agencies)} TX agencies fetched")
+
+    # Step 2: match agencies to target cities by substring in agency_name.
+    # Agency records have no city_name field — "Cibolo Police Department" → "Cibolo".
+    # Prefer city PDs (agency_type_name="City") over county SOs.
+    city_to_ori: dict[str, str] = {}
+    city_to_name: dict[str, str] = {}
+
+    for city_name, _zips in SUBURBAN_CITY_TO_ZIPS.items():
+        city_upper = city_name.upper()
+        candidates = [
+            a for a in all_agencies
+            if city_upper in a.get("agency_name", "").upper()
+        ]
+        if not candidates:
+            logger.warning(
+                f"FBI CDE: no agency found for '{city_name}' — "
+                f"ZIP(s) {_zips} will remain NO_DATA"
+            )
+            continue
+
+        # City PD preferred; fall back to county SO or first match
+        pds = [a for a in candidates if a.get("agency_type_name", "").lower() == "city"]
+        chosen = (pds or candidates)[0]
+        city_to_ori[city_upper] = chosen["ori"]
+        city_to_name[city_upper] = chosen["agency_name"]
+
+    if not city_to_ori:
+        logger.warning("FBI CDE: no agencies matched any target city")
+        return None
+
+    # Step 3: fetch offense totals per agency.
+    # api.usa.gov/crime/fbi/cde only proxies the agency LIST — per-agency offense
+    # data is on cde.fbi.gov (the CDE website's own public API, no key needed).
+    # We try two endpoint shapes; whichever returns 200 is used.
+    _CDE_BASE = "https://cde.fbi.gov/api"
+
+    def _fetch_offenses(ori: str) -> tuple[int, int]:
+        """Return (total_offenses, population) for the agency, or (0, 0) on failure."""
+        # NIBRS annual offense counts by subcategory
+        attempts = [
+            (
+                f"{_CDE_BASE}/nibrs/offense/agencies/{ori}/count/annual",
+                {"variable": "offense_subcat_name", "from": FBI_CDE_YEAR, "to": FBI_CDE_YEAR},
+            ),
+            # Fallback: try without the variable filter
+            (
+                f"{_CDE_BASE}/nibrs/offense/agencies/{ori}/count/annual",
+                {"from": FBI_CDE_YEAR, "to": FBI_CDE_YEAR},
+            ),
+            # Fallback: prior year in case current year isn't published yet
+            (
+                f"{_CDE_BASE}/nibrs/offense/agencies/{ori}/count/annual",
+                {"variable": "offense_subcat_name", "from": FBI_CDE_YEAR - 1, "to": FBI_CDE_YEAR - 1},
+            ),
+        ]
+        for url, params in attempts:
+            try:
+                r = requests.get(url, params=params, timeout=15, headers=_HEADERS)
+                logger.debug(f"FBI CDE offense probe [{r.status_code}]: {r.url}")
+                if r.status_code != 200:
+                    continue
+                body = r.json()
+                # Response: {"data": [{"data_year": Y, "key": "Burglary", "value": N}, ...]}
+                # or a plain list
+                items = body.get("data", body) if isinstance(body, dict) else body
+                if not isinstance(items, list) or not items:
+                    continue
+                # Sum "value" field across all offense subcategories
+                total = sum(int(item.get("value", 0) or 0) for item in items)
+                # Population comes from a separate agency detail endpoint; use 0 here —
+                # process_suburban_crime() will fill in Census population instead.
+                return total, 0
+            except Exception as exc:
+                logger.debug(f"FBI CDE offense attempt failed ({url}): {exc}")
+        return 0, 0
+
+    rows = []
+    city_zip_map = {c.upper(): zips for c, zips in SUBURBAN_CITY_TO_ZIPS.items()}
+
+    for city_upper, ori in city_to_ori.items():
+        total, pop = _fetch_offenses(ori)
+        if total == 0:
+            logger.warning(
+                f"FBI CDE: no offense data for {city_upper} "
+                f"({ori} — {city_to_name[city_upper]}) — ZIP(s) "
+                f"{city_zip_map.get(city_upper, [])} will remain NO_DATA"
+            )
+            continue
+
+        logger.info(
+            f"FBI CDE {city_upper} — {city_to_name[city_upper]} ({ori}): "
+            f"{total:,} Part I offenses ({FBI_CDE_YEAR})"
+        )
+        for zip_code in city_zip_map.get(city_upper, []):
+            rows.append({
+                "zip": str(zip_code).zfill(5),
+                "crime_incidents": total,
+                "ucr_population": pop,
+            })
+
+    if not rows:
+        logger.warning(
+            "FBI CDE: no suburban crime rows assembled. "
+            "All agency offense lookups failed — check logs above for details."
+        )
+        return None
+
+    df = pd.DataFrame(rows)
+    logger.info(f"Suburban crime (UCR): {len(df)} ZIP records assembled")
+    _cache.set(cache_key, df, source="load_suburban_crime")
     return df
 
 

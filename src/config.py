@@ -27,6 +27,7 @@ CACHE_DIR = ROOT_DIR / ".cache"
 CACHE_TTL = {
     "census_hours": 720,  # 30 days — ACS is annual data, no point re-fetching
     "crime_hours": 720,  # 30 days — ZIP-level crime rankings are stable month-to-month
+    "suburban_crime_hours": 8760,  # 1 year — UCR data is annual; refreshes once/year
     "commute_hours": 8760,  # 1 year — drive times to BAMC are effectively static
     "zillow_hours": 168,  # 7 days — Zillow publishes monthly updates
     "zhvf_hours": 168,  # 7 days — ZHVF forecast refreshes monthly
@@ -317,6 +318,29 @@ CENSUS_TABLES = {
     "units_1att": "B25024_003E",  # 1-unit, attached (townhouse/rowhouse)
 }
 CENSUS_BASE_URL = "https://api.census.gov/data"
+
+# ── FBI Crime Data Explorer ───────────────────────────────────────────────────
+# Free API key at https://api.data.gov/signup/ (instant email delivery).
+# Used to fetch UCR Part I offense data for suburban TX agencies outside SAPD
+# jurisdiction (Cibolo PD, Schertz PD, New Braunfels PD, etc.).
+# Without this key the pipeline runs as-is; suburban ZIPs retain NO_DATA flag.
+FBI_CDE_API_KEY = os.getenv("FBI_CDE_API_KEY", None)
+FBI_CDE_YEAR = 2023  # most recent full year of FBI UCR data
+
+# City → ZIP mapping for suburbs outside SAPD jurisdiction.
+# Keys are city names as returned by FBI CDE (casing normalized at lookup time).
+# Values list all ZIPs primarily policed by that city's department.
+# Add entries here to bring new suburban ZIPs into pipeline scoring.
+SUBURBAN_CITY_TO_ZIPS = {
+    "Cibolo": ["78108"],
+    "Schertz": ["78154"],
+    "Converse": ["78109"],
+    "Universal City": ["78148"],
+    "Seguin": ["78155"],
+    "New Braunfels": ["78130", "78132"],
+    "Boerne": ["78006", "78015"],
+    "Spring Branch": ["78070"],
+}
 
 # ── Google Maps ───────────────────────────────────────────────────────────────
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", None)
